@@ -5,6 +5,38 @@ pending queue so **whoever has sung least goes next**. Nobody is blocked; the
 order just keeps rebalancing. Identity is keyed on a device fingerprint, so a
 guest can't jump the line by retyping their name.
 
+## Quick start
+
+**Only prerequisite: [Node.js](https://nodejs.org) 18 or newer.** Then, from a
+clone of this repo:
+
+```sh
+cd karafun-fairshare
+npm install      # one time — installs express + ws + http-proxy
+npm start        # safe OBSERVE mode: logs only, never touches the player
+```
+
+That's the whole install. Now:
+
+- **Operator dashboard:** open **http://localhost:8080/__admin**
+- **Guests:** point a phone on the same Wi-Fi at **http://&lt;this-machine-ip&gt;:8080**
+
+Add a few songs and watch the order rebalance in the dashboard. Nothing is sent
+to the player in this mode — it only logs the order it *would* apply.
+
+To check what the script names are at any time: `npm run`. The ones you'll use:
+
+| Command | What it does |
+|---|---|
+| `npm start` | Run in OBSERVE mode (safe default — logs only) |
+| `npm test` | Run the unit tests |
+| `npm run probe` | Probe the KaraFun control socket (venue setup) |
+| `npm run topology` | Find which deployment framing is buildable (venue setup) |
+| `npm run proxy` | Reverse-proxy mode (needs `KARAFUN_UI_URL`) |
+| `npm run live` | Go live — actually reorders (only after the probe) |
+
+Everything below is detail you don't need to get started.
+
 ## Status: OBSERVE MODE scaffold
 
 This is built but **not yet wired to the live protocol**. It runs in observe
@@ -66,15 +98,21 @@ points. The probe decides which are buildable.
   live "your position" standing.
 
 ## Run
-```
-cd karafun-fairshare
-npm install
-npm run observe          # OBSERVE=1, safe, logs only
-# point a phone on the same LAN at http://<this-machine-ip>:8080
-# add songs, watch the console
-```
-Env: `PLAYER_URL` (default `ws://localhost:57570`), `GUEST_PORT` (8080),
-`WEIGHT` (1.0), `OBSERVE` (1), `MODE` (`page`).
+
+See [Quick start](#quick-start) for first-time install. `npm start` (= `npm run
+observe`) runs the safe, log-only mode. Configuration is all via environment
+variables:
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `OBSERVE` | `1` | `1` = log only; `0` = actually reorder (after the probe) |
+| `MODE` | `page` | `page` = serve our own UI; `proxy` = reverse-proxy KaraFun's UI |
+| `PLAYER_URL` | `ws://localhost:57570` | KaraFun control socket we reorder over |
+| `GUEST_PORT` | `8080` | Port for the guest page / proxy (use `80` for a bare-IP QR) |
+| `WEIGHT` | `1.0` | Stacking penalty per song a singer already has queued |
+| `KARAFUN_UI_URL` | — | Upstream KaraFun web UI (required in proxy mode) |
+| `COOKIE_NAME` | `kffp` | Name of the server-pinned identity cookie (proxy mode) |
+| `ADMIN_TOKEN` | — | If set, the dashboard requires `?t=<token>` |
 
 When the logs confirm the protocol, fill in `kfadapter.js`, then `npm run live`.
 

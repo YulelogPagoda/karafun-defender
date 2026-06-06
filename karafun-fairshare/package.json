@@ -5,6 +5,7 @@
   "description": "Fair-share queue scheduler that sits in front of a KaraFun player (observe-mode scaffold).",
   "main": "server.js",
   "scripts": {
+    "start": "OBSERVE=1 node server.js",
     "observe": "OBSERVE=1 node server.js",
     "live": "OBSERVE=0 node server.js",
     "proxy": "OBSERVE=1 MODE=proxy node server.js",
