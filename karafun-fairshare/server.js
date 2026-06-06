@@ -25,6 +25,7 @@ const http = require('http');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
+const { Readable } = require('stream');
 const express = require('express');
 const { WebSocketServer, WebSocket } = require('ws');
 
@@ -220,6 +221,25 @@ function identify(req) {
 }
 
 const short = (fp) => (fp ? String(fp).slice(0, 8) : '?');
+
+// Buffer a request body so we can inspect it (an add's song) AND still forward
+// it to upstream — http-proxy re-streams from the buffer we hand it, so the
+// proxy stays byte-for-byte transparent.
+function bufferBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+}
+
+function streamFrom(buf) {
+  const s = new Readable();
+  s.push(buf);
+  s.push(null);
+  return s;
+}
 
 // ---- player websocket client (tolerant; must not crash if absent) ---------
 let player = null;
@@ -601,23 +621,35 @@ function startProxyFrontend() {
     // GATING UNKNOWN: KaraFun web-UI request shapes. sniffWeb is best-effort.
     const sniff = kfadapter.sniffWeb(req.method, req.url);
     const who = `fp=${short(fp)}${minted ? '(new)' : ''} ip=${ip}`;
-    if (sniff.kind === 'other') {
-      log('proxy→', `${req.method} ${req.url}  (${who})`);
-    } else {
-      log('proxy→', `${req.method} ${req.url}  :: looks like ${sniff.kind}  (${who})`);
-      if (sniff.kind === 'add') {
-        // Record who added and when. We attribute on the queue echo (via the
-        // correlator) rather than guessing the body shape here, so this works
-        // identically in observe and live — only reconcile()'s moveTo is gated.
-        correlator.recordAdd(fp, Date.now(), sniff.title || null);
-        log(OBSERVE ? 'WOULD' : 'add',
-          `add by ${short(fp)} recorded; will bind to the next queue entry it produces`);
-      }
+
+    if (sniff.kind !== 'add') {
+      log('proxy→', `${req.method} ${req.url}  ${sniff.kind === 'other' ? '' : `:: ${sniff.kind} `}(${who})`);
+      return next();
     }
-    next();
+
+    // An add: capture WHAT was requested. GET carries it in the query; bodies
+    // are buffered then re-streamed so the proxied request still has its body.
+    const finish = (body) => {
+      if (body != null) req._kfBody = body; // forwarded to upstream verbatim
+      const info = kfadapter.parseAddRequest(req.method, req.url, req.headers['content-type'], body);
+      correlator.recordAdd(fp, Date.now(), info.title);
+      const song = info.title || (info.songId ? `#${info.songId}` : '?');
+      log(OBSERVE ? 'WOULD' : 'add',
+        `add by ${short(fp)} :: "${song}" — binds to its next queue entry  (${who})`);
+      next();
+    };
+
+    const hasBody = !['GET', 'HEAD', 'DELETE'].includes(req.method);
+    if (!hasBody) return finish(null);
+    bufferBody(req).then(finish).catch(() => finish(null));
   });
 
-  app.use((req, res) => proxy.web(req, res));
+  // Forward to upstream. If we buffered an add body, re-stream it so the request
+  // upstream is identical — guests get exactly KaraFun's page either way.
+  app.use((req, res) => {
+    const opts = req._kfBody != null ? { buffer: streamFrom(req._kfBody) } : undefined;
+    proxy.web(req, res, opts);
+  });
 
   const httpServer = http.createServer(app);
 

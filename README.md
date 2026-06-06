@@ -153,11 +153,16 @@ World-L-vs-C question `npm run topology` answers.
 
 #### Attribution in proxy mode
 Guests add via KaraFun's UI, so the song lands in *KaraFun's* queue, not ours.
-We bind each queue row to a fingerprint with `correlate.js`: the proxied add is
-recorded with its fingerprint + time, and when the queue frame echoes the new
-row we attach it to the closest recent add (preferring a `singerName` the
-protocol gives us, else timing). That mapping drives both the reorder target and
-the play-count attribution when the song finishes.
+Two layers tie each add to a person:
+- **Who/what at request time** — the proxy reads the add request (URL query and,
+  for bodied requests, a JSON/urlencoded body via `kfadapter.parseAddRequest`) to
+  log *which fingerprint requested which song*. The body is buffered and
+  re-streamed to upstream, so the proxied request is byte-for-byte unchanged —
+  guests still get KaraFun's exact page.
+- **Binding to the queue row** — when KaraFun's queue frame echoes the new row,
+  `correlate.js` attaches it to the closest recent add (preferring a `singerName`
+  the protocol gives us, else timing). That mapping drives both the reorder
+  target and the play-count attribution when the song finishes.
 
 ### Operator dashboard
 Both modes serve a monitor at **`/__admin`** (e.g. `http://localhost:8080/__admin`):

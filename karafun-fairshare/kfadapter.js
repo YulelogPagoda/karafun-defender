@@ -153,6 +153,56 @@ function sniffWeb(method, url) {
   return { kind: 'other' };
 }
 
+// Pull a song title / id out of one object, shallow-recursing into the usual
+// containers. Mutates `out`; first non-null wins.
+function pickSong(out, obj, depth = 0) {
+  if (!obj || typeof obj !== 'object' || depth > 2) return;
+  const title = obj.title ?? obj.songTitle ?? obj.name ?? obj.track ?? obj.song;
+  const songId = obj.songId ?? obj.song_id ?? obj.id;
+  if (typeof title === 'string' && out.title == null) out.title = title.slice(0, 120);
+  if ((typeof songId === 'string' || typeof songId === 'number') && out.songId == null) {
+    out.songId = String(songId).slice(0, 40);
+  }
+  for (const key of ['song', 'track', 'item', 'data', 'payload']) {
+    if (obj[key] && typeof obj[key] === 'object') pickSong(out, obj[key], depth + 1);
+  }
+}
+
+/**
+ * Best-effort extraction of the song from a proxied "add" request — so observe
+ * mode can log *what* each guest requested at request time (in addition to the
+ * queue-echo correlation). Reads the URL query and, for bodied requests, a JSON
+ * or urlencoded body.
+ *
+ * STUB — the real KaraFun add shape is confirmed by the probe; this just tries
+ * the common field names so the first proxied session is still informative.
+ *
+ * @param {string} method
+ * @param {string} url
+ * @param {string} contentType
+ * @param {Buffer|string|null} body
+ * @returns {{title:(string|null), songId:(string|null)}}
+ */
+function parseAddRequest(method, url, contentType, body) {
+  const out = { title: null, songId: null };
+
+  try {
+    const u = new URL(url, 'http://x');
+    pickSong(out, Object.fromEntries(u.searchParams.entries()));
+  } catch (_) { /* malformed url */ }
+
+  if (body && body.length) {
+    const text = Buffer.isBuffer(body) ? body.toString('utf8') : String(body);
+    const ct = (contentType || '').toLowerCase();
+    if (ct.includes('json') || /^\s*[{[]/.test(text)) {
+      try { pickSong(out, JSON.parse(text)); } catch (_) { /* not json */ }
+    } else if (ct.includes('urlencoded') || (text.includes('=') && !text.includes(' '))) {
+      try { pickSong(out, Object.fromEntries(new URLSearchParams(text).entries())); } catch (_) {}
+    }
+  }
+  return out;
+}
+
 /**
  * Move the entry `id` to `targetIndex` in the player's queue.
  *
@@ -196,5 +246,6 @@ module.exports = {
   parseCatalog,
   buildSearch,
   sniffWeb,
+  parseAddRequest,
   moveTo,
 };
