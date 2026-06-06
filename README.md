@@ -247,6 +247,11 @@ dashboard and let guests scan the QR — no typing IPs. It updates **live over
 WebSocket** — the server pushes fresh state on every change (add, finish, reset,
 player connect/disconnect), no polling.
 
+For the room itself there's a full-screen **join screen at `/join`** — a big QR of
+the guest URL plus the link, meant to be thrown on a TV/projector. Hide KaraFun's
+native QR and show this one; it auto-updates over WebSocket if the LAN IP changes.
+(The dashboard has a one-click link to it.)
+
 It also shows an **Attribution health** panel that answers *"can we tell who
 selected what song?"* live — whether add requests are being seen, songs parsed
 from them, queue frames + `singerName` arriving from the player, and adds bound

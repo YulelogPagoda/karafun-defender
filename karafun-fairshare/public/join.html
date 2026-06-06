@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Scan to join</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: system-ui, -apple-system, sans-serif;
+    background: radial-gradient(circle at 50% 30%, #221c33, #14121a 70%);
+    color: #ece8f5; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; text-align: center;
+    padding: 4vmin; gap: 3vmin;
+  }
+  h1 { font-size: 5vmin; margin: 0; font-weight: 800; letter-spacing: -.01em; }
+  .qrwrap {
+    background: #fff; padding: 2.5vmin; border-radius: 3vmin;
+    width: 56vmin; height: 56vmin; box-shadow: 0 1vmin 6vmin rgba(0,0,0,.45);
+  }
+  .qrwrap img { width: 100%; height: 100%; display: block; }
+  .url { font-size: 3.4vmin; font-weight: 700; color: #cbb6ff; word-break: break-all; }
+  .sub { font-size: 2.6vmin; color: #9a93b0; margin: 0; max-width: 70vw; }
+  .badge {
+    position: fixed; top: 2vmin; right: 2.4vmin; font-size: 2vmin;
+    padding: .4vmin 1.4vmin; border-radius: 2vmin; background: #2c2740; color: #cfc8e6;
+  }
+  .badge.live { background: #5a1530; color: #ffb3c8; }
+  .off { opacity: .4; }
+</style>
+</head>
+<body>
+  <div class="badge" id="badge">connecting…</div>
+  <h1>🎤 Scan to join the queue</h1>
+  <div class="qrwrap"><img id="qr" alt="QR code to join" /></div>
+  <div class="url" id="url">—</div>
+  <p class="sub">Fair-share karaoke — whoever has sung least goes next. No app, no sign-up; just scan and add a song.</p>
+
+<script>
+(() => {
+  const token = new URLSearchParams(location.search).get('t') || '';
+  const q = token ? `?t=${encodeURIComponent(token)}` : '';
+  const $ = (id) => document.getElementById(id);
+  let currentUrl = null;
+
+  function apply(s) {
+    const url = (s.guestUrls && s.guestUrls[0]) || null;
+    $('badge').textContent = s.observe ? 'observe' : 'live';
+    $('badge').className = 'badge' + (s.observe ? '' : ' live');
+    if (!url) { $('url').textContent = 'starting…'; $('qr').className = 'off'; return; }
+    if (url !== currentUrl) {
+      currentUrl = url;
+      $('qr').className = '';
+      $('qr').src = `/__admin/qr?url=${encodeURIComponent(url)}${token ? `&t=${encodeURIComponent(token)}` : ''}`;
+      $('url').textContent = url.replace(/^https?:\/\//, '');
+    }
+  }
+
+  // Live channel so the QR tracks the server (e.g. if the LAN IP changes).
+  function connect() {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws = new WebSocket(`${proto}://${location.host}/__admin/ws${q}`);
+    ws.onmessage = (ev) => { const m = JSON.parse(ev.data); if (m.type === 'state') apply(m); };
+    ws.onclose = () => { $('badge').textContent = 'reconnecting…'; setTimeout(connect, 1500); };
+    ws.onerror = () => {};
+  }
+  connect();
+})();
+</script>
+</body>
+</html>

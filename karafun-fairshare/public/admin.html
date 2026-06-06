@@ -59,6 +59,7 @@
       <div id="qrurl" class="qrurl"></div>
       <div id="qrroom" class="muted" style="margin-top:.3rem;font-size:.8rem"></div>
       <select id="qrpick" style="display:none"></select>
+      <div style="margin-top:.5rem"><a id="joinlink" href="/join" target="_blank" rel="noopener" class="muted">↗ open full-screen join screen (for a TV)</a></div>
     </div>
   </div>
 
@@ -240,6 +241,7 @@
 
   $('#qrpick').onchange = () => updateQR(lastUrls, true);
   $('#dlBtn').onclick = () => { window.location = `/__admin/log${q}`; };
+  $('#joinlink').href = `/join${q}`;
 
   $('#status').innerHTML = chip('connecting…');
   connect();

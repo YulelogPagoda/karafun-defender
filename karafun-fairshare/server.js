@@ -512,6 +512,8 @@ function adminState() {
 function installAdmin(app) {
   // Registered before the static/proxy catch-all so these win.
   app.get('/__admin', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'admin.html')));
+  // Full-screen "Scan to join" display — throw this on a TV/projector for the room.
+  app.get('/join', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'join.html')));
   app.get('/__admin/state', (req, res) => {
     if (!adminAuthed(req)) return res.status(403).json({ error: 'bad admin token' });
     res.json(adminState());
@@ -704,6 +706,7 @@ function startPageFrontend() {
     log('boot', `MODE=page  OBSERVE=${OBSERVE ? 1 : 0}  weight=${WEIGHT}`);
     logGuestUrls();
     log('boot', `dashboard:   http://localhost:${GUEST_PORT}/__admin   (on this machine)`);
+    log('boot', `join screen: http://localhost:${GUEST_PORT}/join   (put on a TV)`);
     log('boot', `player url:  ${PLAYER_URL}`);
     if (OBSERVE) log('boot', 'observe mode — nothing will be sent to the player');
     connectPlayer();
@@ -858,6 +861,7 @@ function startProxyFrontend() {
     log('boot', `MODE=proxy  OBSERVE=${OBSERVE ? 1 : 0}  weight=${WEIGHT}`);
     logGuestUrls();
     log('boot', `dashboard:   http://localhost:${GUEST_PORT}/__admin   (on this machine)`);
+    log('boot', `join screen: http://localhost:${GUEST_PORT}/join   (put on a TV)`);
     log('boot', `upstream:    ${UPSTREAM || '(UNSET — set KARAFUN_ROOM_URL)'}`);
     if (KARAFUN_ROOM_URL) log('boot', `room link:   ${KARAFUN_ROOM_URL}  (rehosted via the QR above)`);
     log('boot', `rewrite:     ${REWRITE ? `ON — rewriting ${UPSTREAM_HOST} URLs/ws to this host (cloud SPA)` : 'off (local UI — set REWRITE=1 for a cloud room)'}`);
