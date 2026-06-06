@@ -119,6 +119,7 @@ variables:
 | `WEIGHT` | `1.0` | Stacking penalty per song a singer already has queued |
 | `KARAFUN_UI_URL` | — | Proxy upstream origin, if set manually instead of `KARAFUN_ROOM_URL` |
 | `JOIN_PATH` | `/` | Room path the QR carries, if set manually instead of `KARAFUN_ROOM_URL` |
+| `REWRITE` | `0` | Cloud rooms: rewrite upstream-host URLs/WS in HTML/JS/JSON so the SPA routes through us (brittle; leave off for a local UI) |
 | `COOKIE_NAME` | `kffp` | Name of the server-pinned identity cookie (proxy mode) |
 | `ADMIN_TOKEN` | — | If set, the dashboard requires `?t=<token>` |
 
@@ -150,6 +151,23 @@ What happens:
 
 Which upstream is clean vs brittle (local player UI vs karafun.com cloud) is the
 World-L-vs-C question `npm run topology` answers.
+
+#### Cloud rooms (`REWRITE=1`)
+If the room is the **karafun.com cloud SPA**, its HTML/JS reference absolute
+`https://www.karafun.com` URLs and open a `wss://…` socket that would bypass us.
+`REWRITE=1` rewrites those upstream-host references (in HTML/JS/JSON, plus the
+WebSocket URL) back to our origin, so the SPA's traffic routes through the proxy
+and stays observable:
+```sh
+KARAFUN_ROOM_URL="https://www.karafun.com/000000" REWRITE=1 npm start
+```
+We also strip `Accept-Encoding` (to rewrite uncompressed bodies), present the
+upstream's `Origin`/`Referer`, and proxy the WebSocket. Binary responses (images,
+fonts) pass through untouched. This is **best-effort and brittle** — a KaraFun
+frontend deploy can change the shapes, and v1 rewrites a single upstream host
+(separate api/cdn subdomains aren't routed). Leave it **off** for a local UI,
+where transparency is free. The dashboard shows a `cloud rewrite: on` chip and a
+rewritten-response count so you can see it working.
 
 #### Attribution in proxy mode
 Guests add via KaraFun's UI, so the song lands in *KaraFun's* queue, not ours.

@@ -31,6 +31,7 @@ const { WebSocketServer, WebSocket } = require('ws');
 
 const fairshare = require('./fairshare');
 const kfadapter = require('./kfadapter');
+const rewrite = require('./rewrite');
 const { Store } = require('./store');
 const { Correlator } = require('./correlate');
 
@@ -71,6 +72,13 @@ if (KARAFUN_ROOM_URL) {
 // Room link present => MITM proxy is the obvious intent, so default start to it.
 const MODE = (process.env.MODE || (KARAFUN_ROOM_URL ? 'proxy' : 'page')).toLowerCase();
 
+// Cloud rewriting: rewrite upstream-host URLs in HTML/JS/JSON (+ the ws URL) so
+// the SPA's traffic routes back through us. Needed only when the room is the
+// karafun.com cloud SPA (World C); a no-op cost for local UIs, so off by default.
+const REWRITE = process.env.REWRITE === '1';
+let UPSTREAM_HOST = '';
+try { if (UPSTREAM) UPSTREAM_HOST = new URL(UPSTREAM).host; } catch (_) { /* set at boot warn */ }
+
 // ---- state ----------------------------------------------------------------
 const store = new Store().load();
 const correlator = new Correlator(); // proxy mode: add-time -> queue-entry binding
@@ -110,6 +118,7 @@ const diag = {
   unattributed: 0,    // queue rows we couldn't tie to anyone
   playsAttributed: 0,
   playsUnattributed: 0,
+  rewrites: 0,        // upstream textual responses rewritten (cloud mode)
   recentAdds: [],     // { t, fp, song }
   recentBinds: [],    // { t, entryId, fp, title }
   recentPlays: [],    // { t, fp, title }
@@ -445,6 +454,7 @@ function adminState() {
     guestUrls: guestUrls(), // this machine's LAN IP(s) + room path — the QR
     qr: !!QRCode,
     upstream: MODE === 'proxy' ? (UPSTREAM || null) : null,
+    rewrite: MODE === 'proxy' ? REWRITE : null,
     roomUrl: KARAFUN_ROOM_URL || null,
     joinPath: JOIN_PATH,
     playerConnected: !!(player && player.readyState === WebSocket.OPEN),
@@ -668,14 +678,62 @@ function startProxyFrontend() {
     autoRewrite: true,         // rewrite redirect Location host -> us
     cookieDomainRewrite: '',   // scope upstream cookies to our origin
     xfwd: true,
+    selfHandleResponse: REWRITE, // we write the response ourselves when rewriting
   });
 
-  // Append our minted identity cookie to the upstream response.
-  proxy.on('proxyRes', (proxyRes, req) => {
-    if (req._kfMinted) {
-      const prev = proxyRes.headers['set-cookie'] || [];
-      proxyRes.headers['set-cookie'] = [].concat(prev, req._kfMinted);
+  // Cloud mode: ask upstream for uncompressed bodies (so we can rewrite them) and
+  // present the upstream's own Origin/Referer (CSRF/WS origin checks).
+  proxy.on('proxyReq', (proxyReq, req) => {
+    if (!REWRITE) return;
+    proxyReq.setHeader('accept-encoding', 'identity');
+    if (UPSTREAM) proxyReq.setHeader('origin', UPSTREAM);
+    const ref = req.headers.referer;
+    if (ref && UPSTREAM) {
+      try { const u = new URL(ref); proxyReq.setHeader('referer', UPSTREAM + u.pathname + u.search); }
+      catch (_) { /* leave as-is */ }
     }
+  });
+
+  const cookieFor = (req) => (req._kfMinted ? [req._kfMinted] : []);
+
+  proxy.on('proxyRes', (proxyRes, req, res) => {
+    // No rewriting: http-proxy pipes the body; we only append our cookie header.
+    if (!REWRITE) {
+      const extra = cookieFor(req);
+      if (extra.length) {
+        const prev = proxyRes.headers['set-cookie'] || [];
+        proxyRes.headers['set-cookie'] = [].concat(prev, extra);
+      }
+      return;
+    }
+
+    // Rewriting (selfHandleResponse): we own the response.
+    const headers = { ...proxyRes.headers };
+    const extra = cookieFor(req);
+    if (extra.length) headers['set-cookie'] = [].concat(headers['set-cookie'] || [], extra);
+
+    // Binary / non-text: stream straight through unchanged.
+    if (!rewrite.isTextual(proxyRes.headers['content-type'])) {
+      res.writeHead(proxyRes.statusCode, headers);
+      proxyRes.pipe(res);
+      return;
+    }
+
+    // Textual: buffer, rewrite upstream-host URLs -> our host, resend.
+    const chunks = [];
+    proxyRes.on('data', (c) => chunks.push(c));
+    proxyRes.on('end', () => {
+      const ourHost = req.headers.host;
+      const body = rewrite.rewriteBody(Buffer.concat(chunks).toString('utf8'),
+        { upstreamHost: UPSTREAM_HOST, ourHost });
+      const buf = Buffer.from(body, 'utf8');
+      delete headers['content-encoding'];
+      delete headers['transfer-encoding'];
+      headers['content-length'] = Buffer.byteLength(buf);
+      diag.rewrites += 1;
+      res.writeHead(proxyRes.statusCode, headers);
+      res.end(buf);
+    });
   });
 
   proxy.on('error', (err, req, res) => {
@@ -740,7 +798,8 @@ function startProxyFrontend() {
   httpServer.on('upgrade', (req, socket, head) => {
     if (handleAdminUpgrade(req, socket, head)) return;
     log('proxy', `ws upgrade ${req.url} -> upstream`);
-    proxy.ws(req, socket, head);
+    // Present the upstream's Origin on the ws handshake when rewriting (cloud).
+    proxy.ws(req, socket, head, REWRITE && UPSTREAM ? { headers: { origin: UPSTREAM } } : undefined);
   });
 
   httpServer.listen(GUEST_PORT, () => {
@@ -749,6 +808,7 @@ function startProxyFrontend() {
     log('boot', `dashboard:   http://localhost:${GUEST_PORT}/__admin   (on this machine)`);
     log('boot', `upstream:    ${UPSTREAM || '(UNSET — set KARAFUN_ROOM_URL)'}`);
     if (KARAFUN_ROOM_URL) log('boot', `room link:   ${KARAFUN_ROOM_URL}  (rehosted via the QR above)`);
+    log('boot', `rewrite:     ${REWRITE ? `ON — rewriting ${UPSTREAM_HOST} URLs/ws to this host (cloud SPA)` : 'off (local UI — set REWRITE=1 for a cloud room)'}`);
     log('boot', `player ctrl: ${PLAYER_URL}`);
     log('boot', `identity:    httpOnly '${COOKIE_NAME}' token (server-pinned) + source IP`);
     if (GUEST_PORT !== 80) {

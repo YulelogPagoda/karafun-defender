@@ -137,6 +137,7 @@
       chip(`weight: ${s.weight}`),
       chip(`player: ${s.playerConnected ? 'connected' : 'offline'}`, s.playerConnected ? 'ok' : 'warn'),
       s.upstream ? chip(`upstream: ${s.upstream}`) : '',
+      s.rewrite === true ? chip('cloud rewrite: on', 'ok') : (s.rewrite === false ? chip('rewrite: off') : ''),
       s.pendingAdds ? chip(`${s.pendingAdds} add(s) awaiting queue echo`) : '',
       chip('live', 'ok'),
     ].join('');
@@ -208,6 +209,7 @@
       row(d.queueEntriesWithSinger > 0, 'singerName in queue (best case)', `${d.queueEntriesWithSinger}/${d.queueEntriesSeen}`),
       row(d.correlated > 0, 'Add bound to a queue row (who↔what)', d.correlated),
       row(d.playsAttributed > 0, 'Plays attributed', `${d.playsAttributed} ok / ${d.playsUnattributed} miss`),
+      d.rewrites > 0 ? row(true, 'Cloud responses rewritten', d.rewrites) : '',
     ].join('');
     const adds = (d.recentAdds || []).slice(-5).reverse()
       .map((a) => `${esc(a.fp)} → ${esc(a.song)}`).join('  ·  ');
