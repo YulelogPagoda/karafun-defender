@@ -7,6 +7,7 @@
   "scripts": {
     "observe": "OBSERVE=1 node server.js",
     "live": "OBSERVE=0 node server.js",
+    "proxy": "OBSERVE=1 MODE=proxy node server.js",
     "test": "node --test",
     "probe": "node ../karafun-probe.js",
     "topology": "node ../karafun-topology.js"
@@ -16,6 +17,7 @@
   },
   "dependencies": {
     "express": "^4.21.2",
+    "http-proxy": "^1.18.1",
     "ws": "^8.18.0"
   }
 }

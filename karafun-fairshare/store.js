@@ -31,16 +31,21 @@ class Store {
     this._dirty = false;
   }
 
-  /** Ensure a fingerprint exists; update its display name. Returns the record. */
-  ensure(fp, name) {
+  /**
+   * Ensure a fingerprint exists; update its display name and (optionally) the
+   * last-seen IP. `ip` is used by proxy mode's server-side identity. Returns the
+   * record.
+   */
+  ensure(fp, name, ip) {
     let rec = this.people.get(fp);
     if (!rec) {
       rec = { name: name || 'guest', played: 0, firstSeen: Date.now() };
+      if (ip) rec.lastIp = ip;
       this.people.set(fp, rec);
       this._dirty = true;
-    } else if (name && name !== rec.name) {
-      rec.name = name;
-      this._dirty = true;
+    } else {
+      if (name && name !== rec.name) { rec.name = name; this._dirty = true; }
+      if (ip && ip !== rec.lastIp) { rec.lastIp = ip; this._dirty = true; }
     }
     return rec;
   }

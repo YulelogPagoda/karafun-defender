@@ -133,6 +133,27 @@ function buildSearch(query) {
 }
 
 /**
+ * Classify a proxied KaraFun *web UI* request (proxy mode) by method + URL, so
+ * observe mode can log "this looked like an add/search" and attribute it to the
+ * guest's fingerprint. Best-effort URL heuristics — the real KaraFun web
+ * endpoints are unconfirmed; the probe / a first proxied session reveal them,
+ * and then this (and body parsing for the title/songId) gets made precise.
+ *
+ * STUB — confirm against real KaraFun web requests.
+ *
+ * @param {string} method
+ * @param {string} url
+ * @returns {{kind:'add'|'search'|'queueop'|'other', title?:string}}
+ */
+function sniffWeb(method, url) {
+  const u = (url || '').toLowerCase();
+  if (/(^|\/)(add|enqueue)(\/|\?|$)|queue\/add|playlist\/add/.test(u)) return { kind: 'add' };
+  if (/(^|\/)(search|catalog|songs)(\/|\?|$)|[?&]q=/.test(u)) return { kind: 'search' };
+  if (/(^|\/)(remove|delete|move|reorder|up|down)(\/|\?|$)/.test(u)) return { kind: 'queueop' };
+  return { kind: 'other' };
+}
+
+/**
  * Move the entry `id` to `targetIndex` in the player's queue.
  *
  * Two strategies are sketched; which is real depends on what the protocol
@@ -174,5 +195,6 @@ module.exports = {
   detectFinished,
   parseCatalog,
   buildSearch,
+  sniffWeb,
   moveTo,
 };

@@ -74,9 +74,33 @@ npm run observe          # OBSERVE=1, safe, logs only
 # add songs, watch the console
 ```
 Env: `PLAYER_URL` (default `ws://localhost:57570`), `GUEST_PORT` (8080),
-`WEIGHT` (1.0), `OBSERVE` (1).
+`WEIGHT` (1.0), `OBSERVE` (1), `MODE` (`page`).
 
 When the logs confirm the protocol, fill in `kfadapter.js`, then `npm run live`.
+
+### Proxy mode (`MODE=proxy`) — framing 1/2
+Instead of serving our own page, reverse-proxy KaraFun's *own* web UI through
+this box so the QR points at us and guests get KaraFun's interface, while we
+fingerprint each session server-side and reorder out-of-band:
+```
+cd karafun-fairshare
+# point upstream at whatever the probe revealed:
+KARAFUN_UI_URL=http://<player-ip>:<port> npm run proxy   # OBSERVE=1, MODE=proxy
+# guests scan a QR for  http://<this-box-ip>/   (use GUEST_PORT=80 for a bare URL)
+```
+- Guests talk **plain HTTP to us** (our origin) — no forged cert, no CA install,
+  no HSTS issue. We talk to `KARAFUN_UI_URL` as an ordinary client.
+- Identity is a server-minted **httpOnly token** cookie + source IP, pinned in
+  `store.js`. A guest can't forge a fresh identity by editing a field — this is
+  the evasion-resistant binding (only wired in proxy mode, where we own the
+  responses).
+- Reordering still goes over the **player control link** (`PLAYER_URL` →
+  `kfadapter`), independent of how guests add. In observe mode we proxy +
+  fingerprint + log only; bodies are never altered and the queue isn't touched.
+- Extra env: `KARAFUN_UI_URL` (upstream, required), `COOKIE_NAME` (`kffp`).
+
+Which upstream is clean vs brittle (local player UI vs karafun.com cloud) is the
+World-L-vs-C question `npm run topology` answers.
 
 Dependencies: `express` (guest page) + `ws` (both WebSocket directions).
 
