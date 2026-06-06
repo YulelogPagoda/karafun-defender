@@ -82,6 +82,62 @@ means only framing 1. See "Three deployment framings" below.
 Framings 1 and 2 are the same listener; the only difference is where the QR
 points. The probe decides which are buildable.
 
+## How the local MITM works (plain HTTP)
+
+The whole thing runs as **one Node process on a box on the same Wi‑Fi/LAN as the
+KaraFun player** — often the same machine. Guests never reach the internet to use
+it.
+
+```
+ guest phone (browser)             this box (our proxy)              KaraFun
+ ─────────────────────             ────────────────────             ───────
+  scans QR:                         http listener on
+  http://<our-ip>:8080/<room>  ──►  <our-ip>:8080  ──http──►   KaraFun room
+                                      │                          (local UI or cloud)
+                                      │  mints httpOnly token
+                                      │  sees device IP + fingerprint
+                                      │
+                                      └──ws──►  player control socket :57570
+                                                (read queue / reorder)
+```
+
+**It's plain `http://` on purpose — that's the whole trick.** Because *we* are the
+origin the phone connects to, there's no TLS to terminate, no certificate to
+forge, no root CA to install on guests' phones, and no HSTS to fight. Those are
+exactly the walls that make cloud `app↔karafun.com` interception (framing 3)
+impractical — and none of them exist when the guest's connection terminates on
+our own box over the LAN. We then make a normal outbound connection to KaraFun
+ourselves.
+
+Step by step:
+
+1. **Hand out our QR.** It's KaraFun's room link with the host swapped to our box:
+   `KARAFUN_ROOM_URL` derives the upstream origin + room path, and the QR encodes
+   `http://<our-ip>:<port>/<room>`. Guests scan it and get KaraFun's *exact* page
+   — same UI, catalog, and flow as the native QR.
+2. **Every request flows through us.** On the way through we mint a server-side
+   httpOnly identity token, record the device IP, and (page mode) a browser
+   fingerprint — then resolve identity across all three (see *Identity* below).
+3. **We forward to KaraFun and stream the response back** — unchanged for a local
+   player UI, or with absolute-URL/WebSocket rewriting (`REWRITE=1`) for the cloud
+   SPA so the page keeps working through us.
+4. **Reordering is out-of-band.** Independent of how a guest adds a song, we read
+   the queue and apply the fair‑share order over the player's local control
+   socket (`PLAYER_URL` → `kfadapter`); add-requests are tied to the resulting
+   queue rows by the correlator.
+
+Two sub-cases, told apart by `npm run topology`:
+
+- **Local player UI** (the player serves its remote on the LAN) — clean and
+  robust: pure pass-through, no rewriting. The ideal.
+- **Cloud SPA** (`www.karafun.com/<room>`) — works with `REWRITE=1`, which rehosts
+  the SPA's absolute URLs/WebSocket onto us. Best-effort and brittle (a frontend
+  deploy can break it; single upstream host in v1).
+
+For a bare `http://<our-ip>/<room>` QR (no port) run with `GUEST_PORT=80`.
+Everything stays in OBSERVE mode (logs only, no queue mutation) until the probe
+confirms the real frames.
+
 ## Architecture
 ```
 [guest phones] --ws--> [server.js] --ws--> [KaraFun player :57570]
@@ -233,10 +289,30 @@ cd karafun-fairshare
 npm test                 # node:test unit tests for the pure ordering engine
 ```
 
+## Identity & evasion resistance
+Identity is **resolved across three signals**, not keyed on any single one:
+- **Token** — server-minted httpOnly cookie (strong; rides the page load + ws
+  upgrade, survives a localStorage clear).
+- **Device IP** — the guest's LAN address.
+- **Browser fingerprint** — a passive client-side canvas/WebGL/screen/UA hash
+  (`cyrb53`, works on a plain-HTTP LAN; page mode only).
+
+Each identity accumulates every value it's seen with. On each visit we score
+existing identities by matching signals (token weighted strongest) and reuse the
+best match when **the token matches OR at least two signals agree**. So a guest
+can change **any one** signal — clear cookies, hop networks, or present a new
+fingerprint — and still resolve to the same person and the same play count.
+Changing *two at once* is treated as a new identity. The dashboard tags an
+identity `↻ merged` once it has absorbed a switched signal.
+
+Honest limits: a browser exposes **no hardware/advertising ID** to a web page
+(IDFA/GAID are native-app only), so these are the available signals. Proxy mode
+has only token + IP (no fingerprint — we can't run JS on KaraFun's page), so a
+cookie clear there can't be recovered from IP alone. Two strangers only
+false-merge on a double coincidence (e.g. same IP *and* same fingerprint), rare
+at party scale.
+
 ## Known honest limits
-- Fingerprint is forgeable by clearing browser storage. Fine for a party. For
-  evasion-resistance, bind it server-side to a first-visit httpOnly token — see
-  notes in `store.js`. Not built.
 - Reorder strategy (native move vs remove+re-add) is unknown until the probe;
   `kfadapter.moveTo` has both paths sketched.
 - Song-completion attribution depends on the finished-frame naming who sang.

@@ -73,6 +73,49 @@
   const $ = (id) => document.getElementById(id);
   $('name').value = savedName;
 
+  // Passive browser fingerprint — an extra correlation signal so a guest who
+  // clears storage is still recognizable as the same device. Non-cryptographic
+  // hash (cyrb53) so it works on a plain-HTTP LAN (crypto.subtle needs https).
+  function cyrb53(str, seed = 0) {
+    let h1 = 0xdeadbeef ^ seed, h2 = 0x41c6ce57 ^ seed;
+    for (let i = 0; i < str.length; i++) {
+      const ch = str.charCodeAt(i);
+      h1 = Math.imul(h1 ^ ch, 2654435761);
+      h2 = Math.imul(h2 ^ ch, 1597334677);
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507); h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507); h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16);
+  }
+  function canvasSig() {
+    try {
+      const c = document.createElement('canvas');
+      const x = c.getContext('2d');
+      x.textBaseline = 'top'; x.font = '14px Arial';
+      x.fillStyle = '#069'; x.fillText('kf-fp-\u{1F3A4}', 2, 2);
+      x.fillStyle = 'rgba(102,200,0,0.7)'; x.fillText('kf-fp-\u{1F3A4}', 4, 4);
+      return c.toDataURL();
+    } catch (_) { return 'nocanvas'; }
+  }
+  function webglSig() {
+    try {
+      const gl = document.createElement('canvas').getContext('webgl');
+      const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+      return dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : (gl.getParameter(gl.RENDERER) || '');
+    } catch (_) { return 'nowebgl'; }
+  }
+  const BFP = (() => {
+    try {
+      return cyrb53([
+        navigator.userAgent, navigator.language, (navigator.languages || []).join(','),
+        screen.width + 'x' + screen.height + 'x' + screen.colorDepth,
+        new Date().getTimezoneOffset(), navigator.hardwareConcurrency || '',
+        navigator.deviceMemory || '', navigator.maxTouchPoints || '',
+        canvasSig(), webglSig(),
+      ].join('|'));
+    } catch (_) { return ''; }
+  })();
+
   // --- websocket ------------------------------------------------------------
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   let ws, joined = false;
@@ -89,7 +132,7 @@
   function doJoin() {
     const name = $('name').value.trim() || 'guest';
     localStorage.setItem('karafun-name', name);
-    sendMsg({ type: 'join', fp, name });
+    sendMsg({ type: 'join', fp, name, bfp: BFP });
   }
 
   function handle(msg) {

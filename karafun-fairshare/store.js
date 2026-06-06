@@ -3,74 +3,108 @@
 // store.js — identity + play counts. In-memory Map with a JSON snapshot so the
 // standings survive a restart mid-party.
 //
-// Identity is keyed on a device fingerprint sent by the guest page. In this
-// build the fingerprint is generated client-side and kept in localStorage, so it
-// is FORGEABLE by clearing browser storage. That is an accepted limit for a
-// party (see README "Known honest limits").
+// Identity is resolved across THREE signals, not one key:
+//   - token : server-minted httpOnly cookie (strong; survives a localStorage clear)
+//   - ip    : device LAN IP
+//   - bfp   : passive browser fingerprint (page mode only)
+// An identity accumulates every value it has been seen with. On each visit we
+// score existing identities by how many signals match (token weighted strongest)
+// and reuse the best match when the token matches OR at least two signals agree.
+// The effect: a guest can change ANY ONE signal — clear cookies, hop networks,
+// or present a new fingerprint — and still resolve to the same person (and the
+// same play count). Changing two at once is treated as a new identity.
 //
-// FUTURE — evasion-resistant identity (not built this pass):
-//   Bind the fingerprint server-side on first visit. On the guest's first HTTP
-//   hit, mint a random token, set it as an httpOnly + SameSite=Strict cookie,
-//   and store token->fp here. Thereafter trust the cookie, not the client-sent
-//   fingerprint. Clearing localStorage then does nothing; the guest would have
-//   to clear cookies (and even then we can rate-limit fresh identities per IP).
-//   Keep that mapping in this module so the rest of the system stays unaware of
-//   how identity is established.
+// Honest limits: proxy mode has only token+ip (no bfp), so a cookie clear there
+// can't be recovered from IP alone (IP is too weak to merge on its own). And
+// two strangers would only false-merge on a double coincidence (e.g. same IP
+// AND same fingerprint), which is rare at party scale.
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const DEFAULT_FILE = path.join(__dirname, 'store.snapshot.json');
+
+const addUnique = (arr, v) => { if (v && !arr.includes(v)) arr.push(v); };
 
 class Store {
   /** @param {string} [file] snapshot path; defaults to STORE_FILE or store.snapshot.json */
   constructor(file) {
     this.file = file || process.env.STORE_FILE || DEFAULT_FILE;
-    /** @type {Map<string,{name:string, played:number, firstSeen:number}>} */
+    /** @type {Map<string,{id,name,played,firstSeen,tokens:string[],ips:string[],bfps:string[]}>} */
     this.people = new Map();
     this._dirty = false;
   }
 
   /**
-   * Ensure a fingerprint exists; update its display name and (optionally) the
-   * last-seen IP. `ip` is used by proxy mode's server-side identity. Returns the
-   * record.
+   * Resolve (or create) an identity from any combination of signals, merging the
+   * new signal values in. Returns the identity record. `fp` for the rest of the
+   * system is `rec.id`.
+   *
+   * @param {{token?:string, ip?:string, bfp?:string, name?:string}} sig
    */
-  ensure(fp, name, ip) {
-    let rec = this.people.get(fp);
-    if (!rec) {
-      rec = { name: name || 'guest', played: 0, firstSeen: Date.now() };
-      if (ip) rec.lastIp = ip;
-      this.people.set(fp, rec);
-      this._dirty = true;
-    } else {
-      if (name && name !== rec.name) { rec.name = name; this._dirty = true; }
-      if (ip && ip !== rec.lastIp) { rec.lastIp = ip; this._dirty = true; }
+  identify(sig = {}) {
+    const { token, ip, bfp, name } = sig;
+
+    // Score existing identities. Token is strong (unique, random); ip and bfp
+    // are weaker corroborating signals.
+    let best = null;
+    let bestScore = 0;
+    for (const rec of this.people.values()) {
+      let s = 0;
+      if (token && rec.tokens.includes(token)) s += 2;
+      if (ip && rec.ips.includes(ip)) s += 1;
+      if (bfp && rec.bfps.includes(bfp)) s += 1;
+      if (s > bestScore) { bestScore = s; best = rec; }
     }
+
+    // Reuse when token matches (score >= 2) OR two weak signals agree (1+1).
+    let rec = bestScore >= 2 ? best : null;
+    if (!rec) {
+      rec = {
+        id: token || bfp || ip || crypto.randomBytes(8).toString('hex'),
+        name: name || 'guest',
+        played: 0,
+        firstSeen: Date.now(),
+        tokens: [],
+        ips: [],
+        bfps: [],
+      };
+      this.people.set(rec.id, rec);
+    }
+    if (name && name !== rec.name) rec.name = name;
+    addUnique(rec.tokens, token);
+    addUnique(rec.ips, ip);
+    addUnique(rec.bfps, bfp);
+    this._dirty = true;
     return rec;
   }
 
-  /** Increment lifetime play count for a fingerprint. */
-  recordPlay(fp) {
-    const rec = this.ensure(fp);
+  /** Increment lifetime play count for an identity id. */
+  recordPlay(id) {
+    let rec = this.people.get(id);
+    if (!rec) {
+      rec = { id, name: 'guest', played: 0, firstSeen: Date.now(), tokens: [], ips: [], bfps: [] };
+      this.people.set(id, rec);
+    }
     rec.played += 1;
     this._dirty = true;
     return rec.played;
   }
 
-  /** Lifetime play count for a fingerprint (0 if unknown). */
-  played(fp) {
-    const rec = this.people.get(fp);
+  /** Lifetime play count for an identity id (0 if unknown). */
+  played(id) {
+    const rec = this.people.get(id);
     return rec ? rec.played : 0;
   }
 
   /**
-   * Zero everyone's play count, keeping identities/names. Used by the operator
-   * "reset stats" control: early in the night, before there are enough people
-   * to need fairness, reset so order falls back to first-come (equal scores ->
-   * FIFO) and early arrivers can keep singing.
+   * Zero everyone's play count, keeping identities. Used by the operator "reset
+   * stats" control: early in the night, before there are enough people to need
+   * fairness, reset so order falls back to first-come (equal scores -> FIFO) and
+   * early arrivers can keep singing.
    *
-   * @returns {number} how many people were reset
+   * @returns {number} how many identities were reset
    */
   resetStats() {
     let n = 0;
@@ -81,14 +115,14 @@ class Store {
     return n;
   }
 
-  get(fp) {
-    return this.people.get(fp);
+  get(id) {
+    return this.people.get(id);
   }
 
-  /** Snapshot of all records as a plain object keyed by fingerprint. */
+  /** Snapshot of all records as a plain object keyed by identity id. */
   all() {
     const out = {};
-    for (const [fp, rec] of this.people) out[fp] = { ...rec };
+    for (const [id, rec] of this.people) out[id] = { ...rec };
     return out;
   }
 
@@ -97,7 +131,17 @@ class Store {
     try {
       const raw = fs.readFileSync(this.file, 'utf8');
       const data = JSON.parse(raw);
-      this.people = new Map(Object.entries(data));
+      this.people = new Map();
+      for (const [id, rec] of Object.entries(data)) {
+        // Normalize/migrate older snapshots to the multi-signal shape.
+        rec.id = id;
+        rec.tokens = rec.tokens || [];
+        rec.ips = rec.ips || (rec.lastIp ? [rec.lastIp] : []);
+        rec.bfps = rec.bfps || (rec.bfp ? [rec.bfp] : []);
+        if (!rec.tokens.length && !/^[0-9a-f]{16}$/.test(id)) addUnique(rec.tokens, id);
+        delete rec.lastIp; delete rec.bfp; delete rec.clientFp;
+        this.people.set(id, rec);
+      }
       this._dirty = false;
     } catch (err) {
       if (err.code !== 'ENOENT') {
