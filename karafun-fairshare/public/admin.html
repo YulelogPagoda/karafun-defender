@@ -60,21 +60,14 @@
 
 <script>
 (() => {
-  // optional admin token passed as ?t=... ; forwarded to the API.
+  // optional admin token passed as ?t=... ; forwarded to the API + ws.
   const token = new URLSearchParams(location.search).get('t') || '';
   const q = token ? `?t=${encodeURIComponent(token)}` : '';
   const $ = (s) => document.querySelector(s);
 
   function chip(text, cls) { return `<span class="chip ${cls || ''}">${text}</span>`; }
 
-  async function refresh() {
-    let s;
-    try {
-      const r = await fetch(`/__admin/state${q}`);
-      if (r.status === 403) { $('#status').innerHTML = chip('403 — bad admin token', 'warn'); return; }
-      s = await r.json();
-    } catch (_) { $('#status').innerHTML = chip('server unreachable', 'warn'); return; }
-
+  function render(s) {
     $('#status').innerHTML = [
       chip(`mode: ${s.mode}`),
       s.observe ? chip('OBSERVE — not mutating', 'ok') : chip('LIVE — reordering', 'live'),
@@ -82,6 +75,7 @@
       chip(`player: ${s.playerConnected ? 'connected' : 'offline'}`, s.playerConnected ? 'ok' : 'warn'),
       s.upstream ? chip(`upstream: ${s.upstream}`) : '',
       s.pendingAdds ? chip(`${s.pendingAdds} add(s) awaiting queue echo`) : '',
+      chip('live', 'ok'),
     ].join('');
 
     const qb = $('#queue tbody');
@@ -110,6 +104,22 @@
     $('#updated').textContent = `updated ${new Date().toLocaleTimeString()}`;
   }
 
+  // Live channel: the server pushes state on every change; no polling.
+  let ws;
+  function connect() {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    ws = new WebSocket(`${proto}://${location.host}/__admin/ws${q}`);
+    ws.onmessage = (ev) => {
+      const m = JSON.parse(ev.data);
+      if (m.type === 'state') render(m);
+    };
+    ws.onclose = () => {
+      $('#status').innerHTML = chip('reconnecting…', 'warn');
+      setTimeout(connect, 1500);
+    };
+    ws.onerror = () => {};
+  }
+
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, (c) =>
       ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
@@ -121,17 +131,17 @@
     try {
       const r = await fetch(`/__admin/reset${q}`, { method: 'POST' });
       const j = await r.json();
+      // the server reconciles + pushes fresh state over the ws automatically
       $('#resetHint').textContent = j.ok ? `reset ${j.reset} people` : (j.error || 'failed');
     } catch (_) {
       $('#resetHint').textContent = 'reset failed';
     } finally {
       $('#resetBtn').disabled = false;
-      refresh();
     }
   };
 
-  refresh();
-  setInterval(refresh, 1500);
+  $('#status').innerHTML = chip('connecting…');
+  connect();
 })();
 </script>
 </body>

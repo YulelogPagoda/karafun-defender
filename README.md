@@ -113,8 +113,10 @@ the play-count attribution when the song finishes.
 
 ### Operator dashboard
 Both modes serve a monitor at **`/__admin`** (e.g. `http://localhost:8080/__admin`):
-the live fair-share order with score breakdown, the people table (play counts +
-last IP), and a **Reset stats** button. Reset zeros everyone's play count —
+the fair-share order with score breakdown, the people table (play counts + last
+IP), and a **Reset stats** button. It updates **live over WebSocket** — the
+server pushes fresh state on every change (add, finish, reset, player
+connect/disconnect), no polling. Reset zeros everyone's play count —
 early in the night, before there are enough people to need fairness, reset so
 order falls back to first-come and early arrivers keep singing. Set `ADMIN_TOKEN`
 to require `?t=<token>` on the dashboard.

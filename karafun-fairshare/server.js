@@ -90,6 +90,7 @@ function reconcile(reason) {
   }
 
   broadcastStandings(ordered);
+  broadcastAdmin();
 }
 
 // Push each page-mode guest their live standing. In proxy mode the guest UI is
@@ -181,6 +182,7 @@ function connectPlayer() {
   ws.on('open', () => {
     playerBackoff = 1000;
     log('player', 'connected');
+    broadcastAdmin(); // reflect connected state on dashboards
   });
 
   ws.on('message', (data) => {
@@ -213,6 +215,7 @@ function connectPlayer() {
 
 function scheduleReconnect(why) {
   player = null;
+  broadcastAdmin(); // reflect offline state on dashboards
   const delay = playerBackoff;
   playerBackoff = Math.min(playerBackoff * 2, MAX_BACKOFF);
   log('player', `${why}; reconnecting in ${delay}ms`);
@@ -326,9 +329,48 @@ function installAdmin(app) {
     const n = store.resetStats();
     store.persist(true);
     log('admin', `stats reset — ${n} people zeroed`);
-    reconcile('admin reset');
+    reconcile('admin reset'); // reconcile() pushes the new state to dashboards
     res.json({ ok: true, reset: n });
   });
+}
+
+// Dashboard live channel: push adminState() to connected operators on every
+// change, so the page never polls. noServer + path-routed upgrade so it coexists
+// with the guest ws (page mode) and the proxied ws (proxy mode).
+const adminWss = new WebSocketServer({ noServer: true });
+const adminClients = new Set();
+
+adminWss.on('connection', (ws) => {
+  adminClients.add(ws);
+  log('admin', 'dashboard connected');
+  try { ws.send(JSON.stringify({ type: 'state', ...adminState() })); } catch (_) {}
+  ws.on('close', () => adminClients.delete(ws));
+  ws.on('error', () => adminClients.delete(ws));
+});
+
+function broadcastAdmin() {
+  if (!adminClients.size) return;
+  const payload = JSON.stringify({ type: 'state', ...adminState() });
+  for (const ws of adminClients) {
+    if (ws.readyState === WebSocket.OPEN) {
+      try { ws.send(payload); } catch (_) { /* closing */ }
+    }
+  }
+}
+
+// Route an http 'upgrade' for the dashboard ws; returns true if it handled it.
+function handleAdminUpgrade(req, socket, head) {
+  let pathname, searchParams;
+  try { ({ pathname, searchParams } = new URL(req.url, 'http://localhost')); }
+  catch (_) { return false; }
+  if (pathname !== '/__admin/ws') return false;
+  if (ADMIN_TOKEN && searchParams.get('t') !== ADMIN_TOKEN) {
+    socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+    socket.destroy();
+    return true;
+  }
+  adminWss.handleUpgrade(req, socket, head, (ws) => adminWss.emit('connection', ws, req));
+  return true;
 }
 
 // ---- front end A: our own page (page mode) --------------------------------
@@ -402,8 +444,8 @@ function startPageFrontend() {
   app.use(express.static(PUBLIC_DIR));
   const httpServer = http.createServer(app);
 
-  const wss = new WebSocketServer({ server: httpServer });
-  wss.on('connection', (ws) => {
+  const guestWss = new WebSocketServer({ noServer: true });
+  guestWss.on('connection', (ws) => {
     log('guest', 'connected');
     ws.on('message', (raw) => handleGuestMessage(ws, raw.toString()));
     ws.on('close', () => {
@@ -411,6 +453,12 @@ function startPageFrontend() {
       log('guest', 'disconnected');
     });
     ws.on('error', (err) => log('guest', `error: ${err.message}`));
+  });
+
+  // Route upgrades: dashboard ws -> adminWss, everything else -> guest ws.
+  httpServer.on('upgrade', (req, socket, head) => {
+    if (handleAdminUpgrade(req, socket, head)) return;
+    guestWss.handleUpgrade(req, socket, head, (ws) => guestWss.emit('connection', ws, req));
   });
 
   httpServer.listen(GUEST_PORT, () => {
@@ -493,8 +541,9 @@ function startProxyFrontend() {
 
   const httpServer = http.createServer(app);
 
-  // Proxy WebSocket upgrades (KaraFun web UI realtime channel) to upstream.
+  // Route upgrades: dashboard ws -> adminWss, everything else -> upstream.
   httpServer.on('upgrade', (req, socket, head) => {
+    if (handleAdminUpgrade(req, socket, head)) return;
     log('proxy', `ws upgrade ${req.url} -> upstream`);
     proxy.ws(req, socket, head);
   });
@@ -522,6 +571,11 @@ else startPageFrontend();
 // Persist periodically and on exit so standings survive a restart.
 const persistTimer = setInterval(() => store.persist(), 15000);
 persistTimer.unref();
+
+// Dashboard heartbeat — catches anything not already pushed (e.g. pendingAdds
+// ticking down). No-op when no operator is watching.
+const adminBeat = setInterval(broadcastAdmin, 3000);
+adminBeat.unref();
 
 function shutdown() {
   log('boot', 'shutting down, persisting store');
