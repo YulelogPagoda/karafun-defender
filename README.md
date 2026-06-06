@@ -25,6 +25,12 @@ mode and point a phone at it — both surface the same answers. Send the logs
 back and the `kfadapter.js` stubs get replaced with the real shapes, then flip
 `OBSERVE=0`.
 
+A second, complementary question — *which deployment framing is buildable* —
+is answered by `../karafun-topology.js`: it discriminates whether a guest's
+add via KaraFun's own QR enters over a **loopback** socket (A), a **LAN**
+socket (B), or the **cloud** (C). A/B mean framings 1 or 2 are buildable; C
+means only framing 1. See "Three deployment framings" below.
+
 ## Three deployment framings (same code)
 1. **Our-own-QR proxy** — disable KaraFun's native remote; hand guests a QR
    pointing at this server. Works as long as the proxy↔player local link exists.
@@ -72,6 +78,8 @@ Env: `PLAYER_URL` (default `ws://localhost:57570`), `GUEST_PORT` (8080),
 
 When the logs confirm the protocol, fill in `kfadapter.js`, then `npm run live`.
 
+Dependencies: `express` (guest page) + `ws` (both WebSocket directions).
+
 ## Probe
 ```
 cd karafun-fairshare
@@ -81,6 +89,18 @@ node ../karafun-probe.js ws://localhost:57570 --search "your song"
 ```
 The probe logs every frame both directions and pretty-prints JSON so the queue,
 finished, and search shapes become obvious. Send the output back.
+
+## Topology (which framing is buildable)
+```
+cd karafun-fairshare
+npm run topology                    # probes loopback + LAN on candidate ports
+# or, passing the machine LAN IP if auto-detect misses it:
+node ../karafun-topology.js 192.168.1.50
+```
+Then add a song from KaraFun's *own* QR and watch whether it surfaces on a local
+socket (loopback/LAN ⇒ framing 1 or 2) or not at all (cloud ⇒ framing 1 only).
+The script prints the exact discrimination steps, including the `netstat`/`lsof`
+line that separates loopback from LAN.
 
 ## Tests
 ```

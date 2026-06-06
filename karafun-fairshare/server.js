@@ -11,8 +11,8 @@
 // confirmed against real frames.
 
 const http = require('http');
-const fs = require('fs');
 const path = require('path');
+const express = require('express');
 const { WebSocketServer, WebSocket } = require('ws');
 
 const fairshare = require('./fairshare');
@@ -52,9 +52,18 @@ function currentOrder() {
 // Recompute fair-share order and (observe) log what we WOULD apply. When live,
 // drive the player queue toward the computed order via kfadapter.moveTo.
 function reconcile(reason) {
-  const ordered = currentOrder();
-  const summary = ordered.map((e, i) => `${i + 1}.${e.singerName}:${e.title}`);
-  log('ORDER', `(${reason})`, summary.join('  ') || '(empty)');
+  // annotate() exposes the score breakdown so observe mode shows *why* the
+  // order is what it is. It's a superset of order(): same ordering, extra fields.
+  const ordered = fairshare.annotate(pending, playedOf, WEIGHT);
+  log('ORDER', `(${reason})`);
+  if (ordered.length === 0) {
+    log('     ', '(empty)');
+  } else {
+    ordered.forEach((e) =>
+      log('     ',
+        `#${e._position + 1} "${e.title}" by ${e.singerName} ` +
+        `[played=${e._played} pendingAhead=${e._pendingAhead} score=${e._score}]`));
+  }
 
   if (OBSERVE) {
     ordered.forEach((e, idx) => {
@@ -190,14 +199,23 @@ function connectPlayer() {
   });
 
   ws.on('message', (data) => {
-    log('player→', data.toString());
+    log('player→', `[${(() => { try { return kfadapter.parseInbound(data).type; } catch (_) { return '?'; } })()}]`, data.toString());
     const evt = kfadapter.parseInbound(data);
+
+    // GATING UNKNOWN #1: what a queue frame looks like (observe — log shape).
+    const q = kfadapter.parseQueue(evt.json || {});
+    if (q.length) {
+      log('player', `queue frame: ${q.length} entries; singerName present on`,
+        `${q.filter((e) => e.singerName).length}/${q.length}`);
+    }
+
+    // GATING UNKNOWN #3: catalog results over the same socket (observe — log).
+    const cat = kfadapter.parseCatalog(evt.json || {});
+    if (cat) log('player', `catalog frame: ${cat.length} results`);
 
     // GATING UNKNOWN #2: song-finished attribution.
     const fin = kfadapter.detectFinished(evt.json || {});
-    if (fin) {
-      attributeFinish(fin);
-    }
+    if (fin) attributeFinish(fin);
   });
 
   ws.on('close', () => scheduleReconnect('closed'));
@@ -234,25 +252,10 @@ function attributeFinish(fin) {
   }
 }
 
-// ---- http (serve guest page) + ws server ----------------------------------
-const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css' };
-
-const httpServer = http.createServer((req, res) => {
-  const urlPath = req.url === '/' ? '/index.html' : req.url.split('?')[0];
-  const filePath = path.join(PUBLIC_DIR, path.normalize(urlPath).replace(/^(\.\.[/\\])+/, ''));
-  if (!filePath.startsWith(PUBLIC_DIR)) {
-    res.writeHead(403);
-    return res.end('forbidden');
-  }
-  fs.readFile(filePath, (err, data) => {
-    if (err) {
-      res.writeHead(404);
-      return res.end('not found');
-    }
-    res.writeHead(200, { 'Content-Type': MIME[path.extname(filePath)] || 'application/octet-stream' });
-    res.end(data);
-  });
-});
+// ---- http (serve guest page via express) + ws server ----------------------
+const app = express();
+app.use(express.static(PUBLIC_DIR));
+const httpServer = http.createServer(app);
 
 const wss = new WebSocketServer({ server: httpServer });
 wss.on('connection', (ws) => {

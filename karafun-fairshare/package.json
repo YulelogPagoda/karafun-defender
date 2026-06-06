@@ -8,12 +8,14 @@
     "observe": "OBSERVE=1 node server.js",
     "live": "OBSERVE=0 node server.js",
     "test": "node --test",
-    "probe": "node ../karafun-probe.js"
+    "probe": "node ../karafun-probe.js",
+    "topology": "node ../karafun-topology.js"
   },
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
+    "express": "^4.21.2",
     "ws": "^8.18.0"
   }
 }

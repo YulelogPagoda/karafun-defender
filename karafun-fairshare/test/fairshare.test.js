@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { order, standingFor } = require('../fairshare');
+const { order, annotate, standingFor } = require('../fairshare');
 
 // Helper: build a played-count lookup from a plain object.
 const played = (counts) => (fp) => counts[fp] || 0;
@@ -81,6 +81,34 @@ test('a late single-song singer interleaves ahead of a stacker', () => {
   ];
   // weight=1: a1=0 (tie, earliest seq) first; then c1=0 beats a2=1; then a2, a3.
   assert.deepEqual(ids(order(pending, played({}), 1.0)), [1, 4, 2, 3]);
+});
+
+test('annotate exposes score breakdown and matches order()', () => {
+  const pending = [
+    { id: 1, fp: 'a', seq: 1, title: 'a1', singerName: 'A' },
+    { id: 2, fp: 'a', seq: 2, title: 'a2', singerName: 'A' },
+    { id: 3, fp: 'b', seq: 3, title: 'b1', singerName: 'B' },
+  ];
+  const playedOf = played({ a: 1 }); // A already sang once; B is fresh
+  const ann = annotate(pending, playedOf, 1.0);
+  // same ordering as order(); B (played 0) jumps ahead of A (played 1)
+  assert.deepEqual(ids(ann), ids(order(pending, playedOf, 1.0)));
+  assert.deepEqual(ids(ann), [3, 1, 2]);
+  // first placed is B's b1: played=0, pendingAhead=0, score=0, position=0
+  assert.deepEqual(ann[0], {
+    id: 3, fp: 'b', seq: 3, title: 'b1', singerName: 'B',
+    _played: 0, _pendingAhead: 0, _score: 0, _position: 0,
+  });
+  // a2 carries both A's prior play and the stacking penalty: 1 + 1*1 = 2
+  const a2 = ann.find((e) => e.id === 2);
+  assert.equal(a2._pendingAhead, 1);
+  assert.equal(a2._score, 2);
+});
+
+test('order() returns clean entries without annotation fields', () => {
+  const pending = [{ id: 1, fp: 'a', seq: 1, title: 'a1', singerName: 'A' }];
+  const [e] = order(pending, played({}), 1.0);
+  assert.deepEqual(Object.keys(e).sort(), ['fp', 'id', 'seq', 'singerName', 'title']);
 });
 
 test('standingFor reports 1-based position and songs ahead', () => {
