@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Fair-share — operator</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: system-ui, -apple-system, sans-serif; margin: 0; padding: 1.25rem;
+    background: #14121a; color: #ece8f5; max-width: 60rem; margin: 0 auto;
+  }
+  h1 { font-size: 1.25rem; margin: 0 0 .25rem; }
+  .bar { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin: .5rem 0 1rem; }
+  .chip { font-size: .75rem; padding: .25rem .6rem; border-radius: 1rem; background: #2c2740; color: #cfc8e6; }
+  .chip.warn { background: #5a3d12; color: #ffd9a3; }
+  .chip.ok { background: #14402a; color: #a7f3c8; }
+  .chip.live { background: #5a1530; color: #ffb3c8; }
+  button {
+    font: inherit; padding: .55rem .9rem; border-radius: .6rem; border: 1px solid #6c4cff;
+    background: #6c4cff; color: #fff; cursor: pointer;
+  }
+  button.danger { background: #b3243f; border-color: #b3243f; }
+  button:disabled { opacity: .5; cursor: default; }
+  h2 { font-size: .95rem; color: #b9b2cf; margin: 1.25rem 0 .4rem; }
+  table { width: 100%; border-collapse: collapse; font-size: .88rem; }
+  th, td { text-align: left; padding: .4rem .5rem; border-bottom: 1px solid #2c2740; }
+  th { color: #9a93b0; font-weight: 600; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.me td { }
+  .muted { color: #9a93b0; }
+  .pos { color: #cfc8e6; font-weight: 700; }
+  code { background: #211c30; padding: .05rem .35rem; border-radius: .3rem; }
+  #updated { font-size: .72rem; color: #6f6892; }
+  .qr { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
+  .qrwrap { background: #fff; padding: .5rem; border-radius: .6rem; width: 184px; height: 184px; flex: 0 0 auto; }
+  .qrwrap img { width: 100%; height: 100%; display: block; }
+  .qrurl { font-size: 1.05rem; font-weight: 700; word-break: break-all; }
+  select { font: inherit; padding: .4rem .5rem; border-radius: .5rem; background: #1f1b2b; color: inherit; border: 1px solid #3a3550; margin-top: .5rem; }
+  .hhead { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+  .kv { width: 100%; border-collapse: collapse; margin-top: .5rem; }
+  .kv td { padding: .3rem .5rem; border-bottom: 1px solid #2c2740; font-size: .88rem; }
+  .kv td:first-child { width: 1.6rem; text-align: center; }
+  .kv td:last-child { text-align: right; color: #9a93b0; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+  <h1>🎛️ Fair-share operator</h1>
+  <div class="bar" id="status"></div>
+
+  <div class="card qr" id="qrcard" style="display:none">
+    <div class="qrwrap"><img id="qrimg" alt="QR code to the guest URL" /></div>
+    <div>
+      <div class="muted" style="margin-bottom:.3rem">Guests scan this to join:</div>
+      <div id="qrurl" class="qrurl"></div>
+      <div id="qrroom" class="muted" style="margin-top:.3rem;font-size:.8rem"></div>
+      <select id="qrpick" style="display:none"></select>
+    </div>
+  </div>
+
+  <div class="card" id="health" style="display:none">
+    <div class="hhead">
+      <h2 style="margin:0">Attribution health</h2>
+      <span id="verdict"></span>
+    </div>
+    <table class="kv"><tbody id="healthrows"></tbody></table>
+    <div id="recent" class="muted" style="margin-top:.5rem"></div>
+    <div class="bar" style="margin-top:.7rem">
+      <button id="dlBtn">⬇ Download diagnostics log</button>
+      <span class="muted">hand this back to fix the protocol stubs</span>
+    </div>
+  </div>
+
+  <div class="bar">
+    <button id="resetBtn" class="danger">Reset stats</button>
+    <span class="muted" id="resetHint">zeros everyone's play count — early arrivers sing more until the room fills up</span>
+  </div>
+
+  <h2>Up next (fair-share order)</h2>
+  <table id="queue"><thead><tr>
+    <th>#</th><th>Song</th><th>Singer</th><th>fp</th>
+    <th class="num">played</th><th class="num">ahead</th><th class="num">score</th>
+  </tr></thead><tbody></tbody></table>
+  <p class="muted" id="queueEmpty" style="display:none">Queue is empty.</p>
+
+  <h2>People (by play count)</h2>
+  <table id="people"><thead><tr>
+    <th>Name</th><th>fp</th><th class="num">played</th><th>last IP</th>
+  </tr></thead><tbody></tbody></table>
+  <p class="muted" id="peopleEmpty" style="display:none">Nobody yet.</p>
+
+  <p id="updated"></p>
+
+<script>
+(() => {
+  // optional admin token passed as ?t=... ; forwarded to the API + ws.
+  const token = new URLSearchParams(location.search).get('t') || '';
+  const q = token ? `?t=${encodeURIComponent(token)}` : '';
+  const $ = (s) => document.querySelector(s);
+
+  function chip(text, cls) { return `<span class="chip ${cls || ''}">${text}</span>`; }
+
+  // QR of the guest URL. Only re-points the <img> when the chosen URL changes,
+  // so it doesn't flicker on every state push.
+  let currentQrUrl = null;
+  let lastUrls = [];
+  function updateQR(urls, hasQr) {
+    urls = urls || [];
+    const card = $('#qrcard');
+    if (!urls.length || !hasQr) { card.style.display = 'none'; return; }
+    card.style.display = 'flex';
+    lastUrls = urls;
+    const pick = $('#qrpick');
+    if (urls.length > 1) {
+      const sig = urls.join('|');
+      if (pick.dataset.sig !== sig) {
+        pick.innerHTML = urls.map((u) => `<option>${esc(u)}</option>`).join('');
+        pick.dataset.sig = sig;
+      }
+      pick.style.display = '';
+    } else {
+      pick.style.display = 'none';
+    }
+    const chosen = (urls.length > 1 && pick.value) ? pick.value : urls[0];
+    if (chosen !== currentQrUrl) {
+      currentQrUrl = chosen;
+      $('#qrimg').src = `/__admin/qr?url=${encodeURIComponent(chosen)}${token ? `&t=${encodeURIComponent(token)}` : ''}`;
+      $('#qrurl').textContent = chosen;
+    }
+  }
+
+  function render(s) {
+    $('#status').innerHTML = [
+      chip(`mode: ${s.mode}`),
+      s.observe ? chip('OBSERVE — not mutating', 'ok') : chip('LIVE — reordering', 'live'),
+      chip(`weight: ${s.weight}`),
+      chip(`player: ${s.playerConnected ? 'connected' : 'offline'}`, s.playerConnected ? 'ok' : 'warn'),
+      s.upstream ? chip(`upstream: ${s.upstream}`) : '',
+      s.rewrite === true ? chip('cloud rewrite: on', 'ok') : (s.rewrite === false ? chip('rewrite: off') : ''),
+      s.pendingAdds ? chip(`${s.pendingAdds} add(s) awaiting queue echo`) : '',
+      chip('live', 'ok'),
+    ].join('');
+
+    updateQR(s.guestUrls, s.qr);
+    $('#qrroom').textContent = s.roomUrl ? `→ proxied to KaraFun room: ${s.roomUrl}` : '';
+    renderHealth(s.diag);
+
+    const qb = $('#queue tbody');
+    qb.innerHTML = s.queue.map((e) => `<tr>
+      <td class="pos">${e.position}</td>
+      <td>${esc(e.title)}</td>
+      <td>${esc(e.singer)}</td>
+      <td><code>${e.fp}</code></td>
+      <td class="num">${e.played}</td>
+      <td class="num">${e.pendingAhead}</td>
+      <td class="num">${e.score}</td>
+    </tr>`).join('');
+    $('#queueEmpty').style.display = s.queue.length ? 'none' : 'block';
+    $('#queue').style.display = s.queue.length ? 'table' : 'none';
+
+    const pb = $('#people tbody');
+    pb.innerHTML = s.people.map((p) => `<tr>
+      <td>${esc(p.name)}</td>
+      <td><code>${p.fp}</code></td>
+      <td class="num">${p.played}</td>
+      <td class="muted">${p.lastIp || '—'}</td>
+    </tr>`).join('');
+    $('#peopleEmpty').style.display = s.people.length ? 'none' : 'block';
+    $('#people').style.display = s.people.length ? 'table' : 'none';
+
+    $('#updated').textContent = `updated ${new Date().toLocaleTimeString()}`;
+  }
+
+  // Live channel: the server pushes state on every change; no polling.
+  let ws;
+  function connect() {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    ws = new WebSocket(`${proto}://${location.host}/__admin/ws${q}`);
+    ws.onmessage = (ev) => {
+      const m = JSON.parse(ev.data);
+      if (m.type === 'state') render(m);
+    };
+    ws.onclose = () => {
+      $('#status').innerHTML = chip('reconnecting…', 'warn');
+      setTimeout(connect, 1500);
+    };
+    ws.onerror = () => {};
+  }
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, (c) =>
+      ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+  }
+
+  // Attribution health panel: shows whether the who↔what link is actually working.
+  function renderHealth(d) {
+    if (!d) { $('#health').style.display = 'none'; return; }
+    $('#health').style.display = 'block';
+    $('#verdict').innerHTML = d.canIdentify
+      ? chip('✓ identifying who selected what song', 'ok')
+      : chip('⚠ not confirmed yet', 'warn');
+    const row = (ok, label, detail) =>
+      `<tr><td>${ok ? '✅' : '⬜'}</td><td>${label}</td><td>${detail}</td></tr>`;
+    $('#healthrows').innerHTML = [
+      row(d.addsSeen > 0, 'Add requests seen', d.addsSeen),
+      row(d.addsWithSong > 0, 'Song parsed from request', d.addsWithSong),
+      row(d.queueFramesSeen > 0, 'Queue frames from player', `${d.queueFramesSeen}f / ${d.queueEntriesSeen} rows`),
+      row(d.queueEntriesWithSinger > 0, 'singerName in queue (best case)', `${d.queueEntriesWithSinger}/${d.queueEntriesSeen}`),
+      row(d.correlated > 0, 'Add bound to a queue row (who↔what)', d.correlated),
+      row(d.playsAttributed > 0, 'Plays attributed', `${d.playsAttributed} ok / ${d.playsUnattributed} miss`),
+      d.rewrites > 0 ? row(true, 'Cloud responses rewritten', d.rewrites) : '',
+    ].join('');
+    const adds = (d.recentAdds || []).slice(-5).reverse()
+      .map((a) => `${esc(a.fp)} → ${esc(a.song)}`).join('  ·  ');
+    $('#recent').innerHTML = adds ? `recent adds: ${adds}` : 'no adds observed yet';
+  }
+
+  $('#resetBtn').onclick = async () => {
+    if (!confirm('Reset everyone\'s play count to zero?')) return;
+    $('#resetBtn').disabled = true;
+    try {
+      const r = await fetch(`/__admin/reset${q}`, { method: 'POST' });
+      const j = await r.json();
+      // the server reconciles + pushes fresh state over the ws automatically
+      $('#resetHint').textContent = j.ok ? `reset ${j.reset} people` : (j.error || 'failed');
+    } catch (_) {
+      $('#resetHint').textContent = 'reset failed';
+    } finally {
+      $('#resetBtn').disabled = false;
+    }
+  };
+
+  $('#qrpick').onchange = () => updateQR(lastUrls, true);
+  $('#dlBtn').onclick = () => { window.location = `/__admin/log${q}`; };
+
+  $('#status').innerHTML = chip('connecting…');
+  connect();
+})();
+</script>
+</body>
+</html>
