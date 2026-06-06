@@ -112,37 +112,41 @@ variables:
 | Env var | Default | Meaning |
 |---|---|---|
 | `OBSERVE` | `1` | `1` = log only; `0` = actually reorder (after the probe) |
-| `MODE` | `page` | `page` = serve our own UI; `proxy` = reverse-proxy KaraFun's UI |
+| `MODE` | `page` | `page` = serve our own UI; `proxy` = MITM KaraFun's UI (auto-set if `KARAFUN_ROOM_URL` is given) |
+| `KARAFUN_ROOM_URL` | — | The link KaraFun says guests should join. Sets the proxy upstream **origin** + the **path** the QR carries; turns on proxy mode |
 | `PLAYER_URL` | `ws://localhost:57570` | KaraFun control socket we reorder over |
 | `GUEST_PORT` | `8080` | Port for the guest page / proxy (use `80` for a bare-IP QR) |
 | `WEIGHT` | `1.0` | Stacking penalty per song a singer already has queued |
-| `KARAFUN_UI_URL` | — | Upstream KaraFun web UI (required in proxy mode) |
+| `KARAFUN_UI_URL` | — | Proxy upstream origin, if set manually instead of `KARAFUN_ROOM_URL` |
+| `JOIN_PATH` | `/` | Room path the QR carries, if set manually instead of `KARAFUN_ROOM_URL` |
 | `COOKIE_NAME` | `kffp` | Name of the server-pinned identity cookie (proxy mode) |
 | `ADMIN_TOKEN` | — | If set, the dashboard requires `?t=<token>` |
 
 When the logs confirm the protocol, fill in `kfadapter.js`, then `npm run live`.
 
-### Proxy mode (`MODE=proxy`) — framing 1/2
-Instead of serving our own page, reverse-proxy KaraFun's *own* web UI through
-this box so the QR points at us and guests get KaraFun's interface, while we
-fingerprint each session server-side and reorder out-of-band:
-```
+### Proxy mode — MITM the room link (framing 1/2)
+Reverse-proxy KaraFun's *own* web UI through this box so guests get KaraFun's
+interface, while we fingerprint each session server-side and reorder out-of-band.
+Give it the link KaraFun says guests should join — that one var also flips
+`npm start` into proxy mode:
+```sh
 cd karafun-fairshare
-# point upstream at whatever the probe revealed:
-KARAFUN_UI_URL=http://<player-ip>:<port> npm run proxy   # OBSERVE=1, MODE=proxy
-# guests scan a QR for  http://<this-box-ip>/   (use GUEST_PORT=80 for a bare URL)
+KARAFUN_ROOM_URL="https://www.karafun.com/000000" npm start
 ```
-- Guests talk **plain HTTP to us** (our origin) — no forged cert, no CA install,
-  no HSTS issue. We talk to `KARAFUN_UI_URL` as an ordinary client.
+What happens:
+- We proxy to the room's **origin** and carry its **path** into the QR, so the
+  dashboard QR is just KaraFun's room link **with the host swapped to this
+  proxy** — `http://<our-ip>:<port>/000000`. Guests scan it and land on
+  KaraFun's room *through us*. (Use `GUEST_PORT=80` for a bare
+  `http://<our-ip>/000000`.) The dashboard shows the QR and the room it maps to.
+- Guests talk **plain HTTP to us** — no forged cert, no CA install, no HSTS.
 - Identity is a server-minted **httpOnly token** cookie + source IP, pinned in
-  `store.js`. A guest can't forge a fresh identity by editing a field — this is
-  the evasion-resistant binding (only wired in proxy mode, where we own the
-  responses).
+  `store.js` — a guest can't forge a fresh identity by editing a field.
 - Reordering still goes over the **player control link** (`PLAYER_URL` →
   `kfadapter`), independent of how guests add. In observe mode we proxy +
   fingerprint + log only; bodies are never altered and the queue isn't touched.
-- Extra env: `KARAFUN_UI_URL` (upstream, required), `COOKIE_NAME` (`kffp`),
-  `ADMIN_TOKEN` (optional; gates the dashboard).
+- Instead of `KARAFUN_ROOM_URL` you can split it: `KARAFUN_UI_URL` (origin) +
+  `JOIN_PATH` (room path).
 
 Which upstream is clean vs brittle (local player UI vs karafun.com cloud) is the
 World-L-vs-C question `npm run topology` answers.

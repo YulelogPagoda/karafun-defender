@@ -39,15 +39,36 @@ let QRCode = null;
 try { QRCode = require('qrcode'); } catch (_) { /* optional */ }
 
 // ---- config ---------------------------------------------------------------
-const MODE = (process.env.MODE || 'page').toLowerCase(); // 'page' | 'proxy'
 const PLAYER_URL = process.env.PLAYER_URL || 'ws://localhost:57570';
-const KARAFUN_UI_URL = process.env.KARAFUN_UI_URL || ''; // upstream for proxy mode
 const GUEST_PORT = parseInt(process.env.GUEST_PORT || '8080', 10);
 const WEIGHT = parseFloat(process.env.WEIGHT || '1.0');
 const OBSERVE = process.env.OBSERVE !== '0'; // default ON (safe)
 const COOKIE_NAME = process.env.COOKIE_NAME || 'kffp';
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || ''; // empty = open on the LAN
 const PUBLIC_DIR = path.join(__dirname, 'public');
+
+// Proxy upstream + the "room" path guests must land on.
+//   KARAFUN_ROOM_URL = the exact link KaraFun says to join, e.g.
+//     https://www.karafun.com/000000   or   http://<player-ip>:<port>/<code>
+//   We proxy to its ORIGIN and carry its PATH into the QR, so a guest who scans
+//   http://<our-ip>:<port>/<code> lands on KaraFun's room *through us* — the QR
+//   is just KaraFun's room link with the host swapped to this proxy.
+//   Setting KARAFUN_ROOM_URL also flips the default start into MITM proxy mode.
+const KARAFUN_ROOM_URL = process.env.KARAFUN_ROOM_URL || '';
+const KARAFUN_UI_URL = process.env.KARAFUN_UI_URL || ''; // optional origin override
+let UPSTREAM = KARAFUN_UI_URL; // origin we reverse-proxy to
+let JOIN_PATH = process.env.JOIN_PATH || '/'; // path the QR carries through us
+if (KARAFUN_ROOM_URL) {
+  try {
+    const r = new URL(KARAFUN_ROOM_URL);
+    UPSTREAM = KARAFUN_UI_URL || `${r.protocol}//${r.host}`;
+    JOIN_PATH = (r.pathname || '/') + (r.search || '');
+  } catch (_) {
+    console.error(`[boot] invalid KARAFUN_ROOM_URL: ${KARAFUN_ROOM_URL}`);
+  }
+}
+// Room link present => MITM proxy is the obvious intent, so default start to it.
+const MODE = (process.env.MODE || (KARAFUN_ROOM_URL ? 'proxy' : 'page')).toLowerCase();
 
 // ---- state ----------------------------------------------------------------
 const store = new Store().load();
@@ -76,10 +97,12 @@ function lanIPs() {
   return out;
 }
 
-// The guest-facing URL for an IP. Port 80 is dropped so it reads as a bare
-// http://<ip> (the clean QR target), matching how a browser normalizes it.
+// The guest-facing URL for an IP — this proxy's address plus the room path, so
+// the QR is KaraFun's join link rehosted on us. Port 80 is dropped so it reads
+// as a bare http://<ip>[/room], matching how a browser normalizes it.
 function guestUrl(ip) {
-  return GUEST_PORT === 80 ? `http://${ip}` : `http://${ip}:${GUEST_PORT}`;
+  const base = GUEST_PORT === 80 ? `http://${ip}` : `http://${ip}:${GUEST_PORT}`;
+  return JOIN_PATH && JOIN_PATH !== '/' ? base + JOIN_PATH : base;
 }
 
 // All guest entry-point URLs (this machine's LAN IP(s) on GUEST_PORT).
@@ -343,9 +366,11 @@ function adminState() {
     observe: OBSERVE,
     weight: WEIGHT,
     port: GUEST_PORT,
-    guestUrls: guestUrls(), // this machine's LAN IP(s) — what the QR encodes
+    guestUrls: guestUrls(), // this machine's LAN IP(s) + room path — the QR
     qr: !!QRCode,
-    upstream: MODE === 'proxy' ? (KARAFUN_UI_URL || null) : null,
+    upstream: MODE === 'proxy' ? (UPSTREAM || null) : null,
+    roomUrl: KARAFUN_ROOM_URL || null,
+    joinPath: JOIN_PATH,
     playerConnected: !!(player && player.readyState === WebSocket.OPEN),
     pendingAdds: correlator.pendingAdds(),
     queue: ordered.map((e) => ({
@@ -531,15 +556,15 @@ function startProxyFrontend() {
   // http-proxy is only needed in this mode, so require it lazily.
   const httpProxy = require('http-proxy');
 
-  if (!KARAFUN_UI_URL) {
-    log('boot', 'WARNING: MODE=proxy but KARAFUN_UI_URL is empty.');
-    log('boot', '  Set it to the KaraFun web UI the probe revealed, e.g.');
-    log('boot', '  KARAFUN_UI_URL=http://<player-ip>:<port>   (local UI — clean)');
-    log('boot', '  KARAFUN_UI_URL=https://www.karafun.com      (cloud UI — brittle)');
+  if (!UPSTREAM) {
+    log('boot', 'WARNING: MODE=proxy but no upstream set.');
+    log('boot', '  Give it the link KaraFun says guests should join, e.g.:');
+    log('boot', '  KARAFUN_ROOM_URL="https://www.karafun.com/000000" npm start');
+    log('boot', '  (or KARAFUN_UI_URL=http://<player-ip>:<port> for a local UI)');
   }
 
   const proxy = httpProxy.createProxyServer({
-    target: KARAFUN_UI_URL || 'http://127.0.0.1:1', // dummy => visible 502 until set
+    target: UPSTREAM || 'http://127.0.0.1:1', // dummy => visible 502 until set
     changeOrigin: true,        // send upstream's Host
     ws: true,                  // proxy the realtime channel too
     autoRewrite: true,         // rewrite redirect Location host -> us
@@ -607,7 +632,8 @@ function startProxyFrontend() {
     log('boot', `MODE=proxy  OBSERVE=${OBSERVE ? 1 : 0}  weight=${WEIGHT}`);
     logGuestUrls();
     log('boot', `dashboard:   http://localhost:${GUEST_PORT}/__admin   (on this machine)`);
-    log('boot', `upstream:    ${KARAFUN_UI_URL || '(UNSET — set KARAFUN_UI_URL)'}`);
+    log('boot', `upstream:    ${UPSTREAM || '(UNSET — set KARAFUN_ROOM_URL)'}`);
+    if (KARAFUN_ROOM_URL) log('boot', `room link:   ${KARAFUN_ROOM_URL}  (rehosted via the QR above)`);
     log('boot', `player ctrl: ${PLAYER_URL}`);
     log('boot', `identity:    httpOnly '${COOKIE_NAME}' token (server-pinned) + source IP`);
     if (GUEST_PORT !== 80) {

@@ -49,6 +49,7 @@
     <div>
       <div class="muted" style="margin-bottom:.3rem">Guests scan this to join:</div>
       <div id="qrurl" class="qrurl"></div>
+      <div id="qrroom" class="muted" style="margin-top:.3rem;font-size:.8rem"></div>
       <select id="qrpick" style="display:none"></select>
     </div>
   </div>
@@ -123,6 +124,7 @@
     ].join('');
 
     updateQR(s.guestUrls, s.qr);
+    $('#qrroom').textContent = s.roomUrl ? `→ proxied to KaraFun room: ${s.roomUrl}` : '';
 
     const qb = $('#queue tbody');
     qb.innerHTML = s.queue.map((e) => `<tr>
