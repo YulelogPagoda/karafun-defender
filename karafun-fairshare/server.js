@@ -27,6 +27,7 @@ const { WebSocketServer, WebSocket } = require('ws');
 const fairshare = require('./fairshare');
 const kfadapter = require('./kfadapter');
 const { Store } = require('./store');
+const { Correlator } = require('./correlate');
 
 // ---- config ---------------------------------------------------------------
 const MODE = (process.env.MODE || 'page').toLowerCase(); // 'page' | 'proxy'
@@ -36,12 +37,14 @@ const GUEST_PORT = parseInt(process.env.GUEST_PORT || '8080', 10);
 const WEIGHT = parseFloat(process.env.WEIGHT || '1.0');
 const OBSERVE = process.env.OBSERVE !== '0'; // default ON (safe)
 const COOKIE_NAME = process.env.COOKIE_NAME || 'kffp';
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || ''; // empty = open on the LAN
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
 // ---- state ----------------------------------------------------------------
 const store = new Store().load();
+const correlator = new Correlator(); // proxy mode: add-time -> queue-entry binding
 let seqCounter = 0;
-/** @type {Array<{id:number, fp:string, seq:number, title:string, singerName:string}>} */
+/** @type {Array<{id:*, fp:string, seq:number, title:string, singerName:string}>} */
 let pending = [];
 /** guest socket -> { fp }  (page mode only) */
 const guests = new Map();
@@ -189,6 +192,7 @@ function connectPlayer() {
     if (q.length) {
       log('player', `queue frame: ${q.length} entries; singerName present on`,
         `${q.filter((e) => e.singerName).length}/${q.length}`);
+      handleQueueFrame(q);
     }
 
     // GATING UNKNOWN #3: catalog results over the same socket (observe — log).
@@ -215,6 +219,35 @@ function scheduleReconnect(why) {
   setTimeout(connectPlayer, delay).unref();
 }
 
+// Map an observed player-queue frame to our pending model. In proxy mode the
+// queue truth is KaraFun's, so we attribute each entry to a fingerprint —
+// preferring a previous binding, else a name the protocol gave us, else a
+// timing correlation against recent proxied adds — and mirror it into pending
+// so fairshare can order it and reconcile can reorder it.
+function handleQueueFrame(entries) {
+  if (MODE !== 'proxy') return; // page mode is authoritative over its own pending
+  const now = Date.now();
+  let changed = false;
+  for (const e of entries) {
+    let fp = correlator.fpForEntry(e.id);
+    if (!fp) fp = correlator.attachEntry(e.id, now);
+    if (!fp) continue; // can't attribute yet — leave it for a later frame
+    if (!pending.some((p) => p.id === e.id)) {
+      const rec = store.get(fp);
+      pending.push({
+        id: e.id,
+        fp,
+        seq: ++seqCounter,
+        title: e.title || `song ${seqCounter}`,
+        singerName: rec ? rec.name : 'guest',
+      });
+      log('correlate', `queue entry ${e.id} -> fp=${short(fp)} (${e.title || '?'})`);
+      changed = true;
+    }
+  }
+  if (changed) reconcile('queue update');
+}
+
 // Attribute a finished song to a fingerprint and bump its play count.
 function attributeFinish(fin) {
   // Prefer the entry mapping we already hold (matches by id we assigned).
@@ -223,15 +256,79 @@ function attributeFinish(fin) {
     // Fallback: match by the singer name the finished-frame reported.
     entry = pending.find((e) => e.singerName === fin.singer);
   }
-  if (entry) {
-    store.recordPlay(entry.fp);
-    pending = pending.filter((e) => e.id !== entry.id);
+  // Last resort: the timing correlation bound this entry id to a fingerprint.
+  const fp = entry ? entry.fp
+    : (fin.finishedId != null ? correlator.fpForEntry(fin.finishedId) : null);
+
+  if (fp) {
+    store.recordPlay(fp);
+    if (entry) pending = pending.filter((e) => e.id !== entry.id);
+    if (fin.finishedId != null) correlator.forget(fin.finishedId);
     store.persist();
-    log('PLAY', `recorded for ${entry.singerName} (${entry.title})`);
+    log('PLAY', `recorded for ${short(fp)}${entry ? ` (${entry.title})` : ''}`);
     reconcile('song finished');
   } else {
     log('PLAY', 'finished frame could not be attributed', JSON.stringify(fin));
   }
+}
+
+// ---- operator dashboard (both modes) --------------------------------------
+// A small monitor at /__admin with a "reset stats" button. The double-underscore
+// path avoids colliding with KaraFun's own routes when proxying.
+function adminAuthed(req) {
+  if (!ADMIN_TOKEN) return true; // open on a trusted LAN
+  return (req.query.t || req.headers['x-admin-token']) === ADMIN_TOKEN;
+}
+
+function adminState() {
+  const ordered = fairshare.annotate(pending, playedOf, WEIGHT);
+  const people = Object.entries(store.all())
+    .map(([fp, r]) => ({
+      fp: String(fp).slice(0, 8),
+      name: r.name,
+      played: r.played,
+      lastIp: r.lastIp || null,
+      firstSeen: r.firstSeen,
+    }))
+    .sort((a, b) => b.played - a.played || a.firstSeen - b.firstSeen);
+
+  return {
+    mode: MODE,
+    observe: OBSERVE,
+    weight: WEIGHT,
+    port: GUEST_PORT,
+    upstream: MODE === 'proxy' ? (KARAFUN_UI_URL || null) : null,
+    playerConnected: !!(player && player.readyState === WebSocket.OPEN),
+    pendingAdds: correlator.pendingAdds(),
+    queue: ordered.map((e) => ({
+      id: e.id,
+      position: e._position + 1,
+      title: e.title,
+      singer: e.singerName,
+      fp: String(e.fp).slice(0, 8),
+      played: e._played,
+      pendingAhead: e._pendingAhead,
+      score: e._score,
+    })),
+    people,
+  };
+}
+
+function installAdmin(app) {
+  // Registered before the static/proxy catch-all so these win.
+  app.get('/__admin', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'admin.html')));
+  app.get('/__admin/state', (req, res) => {
+    if (!adminAuthed(req)) return res.status(403).json({ error: 'bad admin token' });
+    res.json(adminState());
+  });
+  app.post('/__admin/reset', (req, res) => {
+    if (!adminAuthed(req)) return res.status(403).json({ error: 'bad admin token' });
+    const n = store.resetStats();
+    store.persist(true);
+    log('admin', `stats reset — ${n} people zeroed`);
+    reconcile('admin reset');
+    res.json({ ok: true, reset: n });
+  });
 }
 
 // ---- front end A: our own page (page mode) --------------------------------
@@ -301,6 +398,7 @@ function handleGuestMessage(ws, raw) {
 
 function startPageFrontend() {
   const app = express();
+  installAdmin(app);
   app.use(express.static(PUBLIC_DIR));
   const httpServer = http.createServer(app);
 
@@ -318,6 +416,7 @@ function startPageFrontend() {
   httpServer.listen(GUEST_PORT, () => {
     log('boot', `MODE=page  OBSERVE=${OBSERVE ? 1 : 0}  weight=${WEIGHT}`);
     log('boot', `guest page:  http://localhost:${GUEST_PORT}`);
+    log('boot', `dashboard:   http://localhost:${GUEST_PORT}/__admin`);
     log('boot', `player url:  ${PLAYER_URL}`);
     if (OBSERVE) log('boot', 'observe mode — nothing will be sent to the player');
     connectPlayer();
@@ -362,6 +461,7 @@ function startProxyFrontend() {
   });
 
   const app = express();
+  installAdmin(app); // our dashboard wins over the proxy catch-all
 
   // Identity + observe middleware — runs BEFORE proxying, never alters the body.
   app.use((req, res, next) => {
@@ -378,14 +478,12 @@ function startProxyFrontend() {
     } else {
       log('proxy→', `${req.method} ${req.url}  :: looks like ${sniff.kind}  (${who})`);
       if (sniff.kind === 'add') {
-        // OBSERVE: we can attribute the add to fp now, but the song title/id
-        // lives in the request body whose shape we haven't confirmed yet.
-        if (OBSERVE) {
-          log('WOULD', `attribute add to ${short(fp)} + reconcile (need body shape — see probe)`);
-        } else {
-          // LIVE (post-probe): parse body -> addSong(fp, title). Wired here.
-          addSong(fp, sniff.title || null);
-        }
+        // Record who added and when. We attribute on the queue echo (via the
+        // correlator) rather than guessing the body shape here, so this works
+        // identically in observe and live — only reconcile()'s moveTo is gated.
+        correlator.recordAdd(fp, Date.now(), sniff.title || null);
+        log(OBSERVE ? 'WOULD' : 'add',
+          `add by ${short(fp)} recorded; will bind to the next queue entry it produces`);
       }
     }
     next();
@@ -404,6 +502,7 @@ function startProxyFrontend() {
   httpServer.listen(GUEST_PORT, () => {
     log('boot', `MODE=proxy  OBSERVE=${OBSERVE ? 1 : 0}  weight=${WEIGHT}`);
     log('boot', `proxy in:    http://0.0.0.0:${GUEST_PORT}   <-- point your QR here`);
+    log('boot', `dashboard:   http://localhost:${GUEST_PORT}/__admin`);
     log('boot', `upstream:    ${KARAFUN_UI_URL || '(UNSET — set KARAFUN_UI_URL)'}`);
     log('boot', `player ctrl: ${PLAYER_URL}`);
     log('boot', `identity:    httpOnly '${COOKIE_NAME}' token (server-pinned) + source IP`);

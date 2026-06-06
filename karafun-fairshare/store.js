@@ -64,6 +64,23 @@ class Store {
     return rec ? rec.played : 0;
   }
 
+  /**
+   * Zero everyone's play count, keeping identities/names. Used by the operator
+   * "reset stats" control: early in the night, before there are enough people
+   * to need fairness, reset so order falls back to first-come (equal scores ->
+   * FIFO) and early arrivers can keep singing.
+   *
+   * @returns {number} how many people were reset
+   */
+  resetStats() {
+    let n = 0;
+    for (const rec of this.people.values()) {
+      if (rec.played !== 0) { rec.played = 0; n += 1; }
+    }
+    this._dirty = true;
+    return n;
+  }
+
   get(fp) {
     return this.people.get(fp);
   }

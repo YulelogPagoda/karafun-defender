@@ -97,10 +97,27 @@ KARAFUN_UI_URL=http://<player-ip>:<port> npm run proxy   # OBSERVE=1, MODE=proxy
 - Reordering still goes over the **player control link** (`PLAYER_URL` →
   `kfadapter`), independent of how guests add. In observe mode we proxy +
   fingerprint + log only; bodies are never altered and the queue isn't touched.
-- Extra env: `KARAFUN_UI_URL` (upstream, required), `COOKIE_NAME` (`kffp`).
+- Extra env: `KARAFUN_UI_URL` (upstream, required), `COOKIE_NAME` (`kffp`),
+  `ADMIN_TOKEN` (optional; gates the dashboard).
 
 Which upstream is clean vs brittle (local player UI vs karafun.com cloud) is the
 World-L-vs-C question `npm run topology` answers.
+
+#### Attribution in proxy mode
+Guests add via KaraFun's UI, so the song lands in *KaraFun's* queue, not ours.
+We bind each queue row to a fingerprint with `correlate.js`: the proxied add is
+recorded with its fingerprint + time, and when the queue frame echoes the new
+row we attach it to the closest recent add (preferring a `singerName` the
+protocol gives us, else timing). That mapping drives both the reorder target and
+the play-count attribution when the song finishes.
+
+### Operator dashboard
+Both modes serve a monitor at **`/__admin`** (e.g. `http://localhost:8080/__admin`):
+the live fair-share order with score breakdown, the people table (play counts +
+last IP), and a **Reset stats** button. Reset zeros everyone's play count —
+early in the night, before there are enough people to need fairness, reset so
+order falls back to first-come and early arrivers keep singing. Set `ADMIN_TOKEN`
+to require `?t=<token>` on the dashboard.
 
 Dependencies: `express` (guest page) + `ws` (both WebSocket directions).
 
