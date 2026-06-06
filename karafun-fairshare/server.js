@@ -262,14 +262,14 @@ function parseCookies(header) {
   return out;
 }
 
-function identify(req) {
+function tokenFor(req) {
   const token = parseCookies(req.headers.cookie)[COOKIE_NAME];
-  if (token) return { fp: token, minted: null };
+  if (token) return { token, minted: null };
   const fresh = crypto.randomBytes(16).toString('hex');
-  // Set on the eventual response (appended in proxyRes). SameSite=Lax is enough
-  // for a same-origin LAN page; HttpOnly keeps JS from reading/forging it.
+  // Set on the eventual response. SameSite=Lax is enough for a same-origin LAN
+  // page; HttpOnly keeps JS from reading/forging it.
   const cookie = `${COOKIE_NAME}=${fresh}; HttpOnly; SameSite=Lax; Path=/; Max-Age=86400`;
-  return { fp: fresh, minted: cookie };
+  return { token: fresh, minted: cookie };
 }
 
 const short = (fp) => (fp ? String(fp).slice(0, 8) : '?');
@@ -445,30 +445,38 @@ function adminAuthed(req) {
 function adminState() {
   const ordered = fairshare.annotate(pending, playedOf, WEIGHT);
   const all = store.all();
-  // Count distinct identities per IP and per browser fingerprint — >1 on either
-  // axis suggests one device behind several identities (storage/cookie cleared).
+  // Residual cross-identity sharing (should be rare now that we merge on 2-of-3).
   const idsPerIp = {};
   const idsPerBfp = {};
   for (const r of Object.values(all)) {
-    if (r.lastIp) idsPerIp[r.lastIp] = (idsPerIp[r.lastIp] || 0) + 1;
-    if (r.bfp) idsPerBfp[r.bfp] = (idsPerBfp[r.bfp] || 0) + 1;
+    for (const ip of (r.ips || [])) idsPerIp[ip] = (idsPerIp[ip] || 0) + 1;
+    for (const bf of (r.bfps || [])) idsPerBfp[bf] = (idsPerBfp[bf] || 0) + 1;
   }
+  const last = (a) => (a && a.length ? a[a.length - 1] : null);
   const people = Object.entries(all)
-    .map(([fp, r]) => ({
-      fp: String(fp).slice(0, 8),
-      name: r.name,
-      played: r.played,
-      lastIp: r.lastIp || null,
-      idsAtIp: r.lastIp ? idsPerIp[r.lastIp] : 1,
-      sharedIp: !!(r.lastIp && idsPerIp[r.lastIp] > 1),
-      bfp: r.bfp ? String(r.bfp).slice(0, 8) : null,
-      idsAtBfp: r.bfp ? idsPerBfp[r.bfp] : 1,
-      sharedBfp: !!(r.bfp && idsPerBfp[r.bfp] > 1),
-      firstSeen: r.firstSeen,
-    }))
+    .map(([id, r]) => {
+      const lastIp = last(r.ips);
+      const lastBfp = last(r.bfps);
+      const ipCount = (r.ips || []).length;
+      const bfpCount = (r.bfps || []).length;
+      const tokenCount = (r.tokens || []).length;
+      return {
+        fp: String(id).slice(0, 8),
+        name: r.name,
+        played: r.played,
+        lastIp, ipCount,
+        bfp: lastBfp ? String(lastBfp).slice(0, 8) : null, bfpCount,
+        // This identity absorbed a switched signal (kept its count across it).
+        merged: tokenCount > 1 || ipCount > 1 || bfpCount > 1,
+        sharedIp: !!(lastIp && idsPerIp[lastIp] > 1),
+        sharedBfp: !!(lastBfp && idsPerBfp[lastBfp] > 1),
+        firstSeen: r.firstSeen,
+      };
+    })
     .sort((a, b) => b.played - a.played || a.firstSeen - b.firstSeen);
   const ipsShared = Object.values(idsPerIp).filter((c) => c > 1).length;
   const bfpsShared = Object.values(idsPerBfp).filter((c) => c > 1).length;
+  const mergedIdentities = people.filter((p) => p.merged).length;
 
   return {
     mode: MODE,
@@ -486,6 +494,7 @@ function adminState() {
     diag: { ...diag, canIdentify: canIdentify() },
     ipsShared,
     bfpsShared,
+    mergedIdentities,
     queue: ordered.map((e) => ({
       id: e.id,
       position: e._position + 1,
@@ -610,15 +619,16 @@ function handleGuestMessage(ws, raw) {
       const name = String(msg.name || 'guest').trim().slice(0, 40);
       const clientFp = String(msg.fp || '').trim().slice(0, 64);   // localStorage id
       const bfp = String(msg.bfp || '').trim().slice(0, 32);       // browser fingerprint
-      // Primary key: the server-pinned httpOnly token; fall back to the client
-      // id if no cookie arrived. localStorage clears don't change the token.
-      const fp = ws._token || clientFp;
-      if (!fp) return send(ws, { type: 'error', error: 'missing fingerprint' });
-      store.ensure(fp, name, ws._ip, { clientFp: clientFp || null, bfp: bfp || null });
-      guests.set(ws, { fp, ip: ws._ip });
+      // Token rode the ws upgrade cookie; fall back to the localStorage id if no
+      // cookie arrived (cookies disabled). Resolve across token+ip+bfp so any
+      // single one of them changing still maps to the same person.
+      const token = ws._token || clientFp || null;
+      if (!token && !ws._ip && !bfp) return send(ws, { type: 'error', error: 'no identity signals' });
+      const rec = store.identify({ token, ip: ws._ip, bfp: bfp || null, name });
+      guests.set(ws, { fp: rec.id, ip: ws._ip });
       store.persist();
       // Don't leak the httpOnly token back to client JS — send a masked id.
-      send(ws, { type: 'joined', fp: short(fp), name, observe: OBSERVE });
+      send(ws, { type: 'joined', fp: short(rec.id), name, observe: OBSERVE });
       broadcastStandings();
       break;
     }
@@ -663,7 +673,7 @@ function startPageFrontend() {
   // upgrade. It survives a localStorage clear (cookie, not localStorage) — the
   // guest would have to clear cookies too.
   app.use((req, res, next) => {
-    const { minted } = identify(req);
+    const { minted } = tokenFor(req);
     if (minted) res.setHeader('Set-Cookie', minted);
     next();
   });
@@ -790,10 +800,11 @@ function startProxyFrontend() {
 
   // Identity + observe middleware — runs BEFORE proxying, never alters the body.
   app.use((req, res, next) => {
-    const { fp, minted } = identify(req);
+    const { token, minted } = tokenFor(req);
     if (minted) req._kfMinted = minted;
     const ip = clientIp(req);
-    store.ensure(fp, store.get(fp)?.name || `guest@${ip}`, ip);
+    // Proxy mode has no browser fingerprint (KaraFun's page); resolve on token+ip.
+    const fp = store.identify({ token, ip }).id;
 
     // GATING UNKNOWN: KaraFun web-UI request shapes. sniffWeb is best-effort.
     diag.proxyRequests += 1;

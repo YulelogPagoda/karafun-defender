@@ -234,23 +234,27 @@ npm test                 # node:test unit tests for the pure ordering engine
 ```
 
 ## Identity & evasion resistance
-Layered signals so a guest can't trivially reset their play count by clearing
-state — the dashboard cross-references all three and flags reuse:
-- **Server-pinned httpOnly token (primary, both modes)** — minted on first visit,
-  keyed server-side. Survives a localStorage clear (it's a cookie, sent on the
-  page load and the ws upgrade); the guest would have to clear cookies too.
-- **Device IP (both modes)** — recorded per identity; the dashboard flags an IP
-  with several identities (the clear-and-rejoin tell).
-- **Passive browser fingerprint (page mode)** — a client-side canvas/WebGL/
-  screen/UA hash (`cyrb53`, works on a plain-HTTP LAN). If someone clears cookies
-  *and* localStorage they get a new token, but the same fingerprint flags them as
-  the same device. Imperfect — privacy browsers randomize it and similar devices
-  can collide.
+Identity is **resolved across three signals**, not keyed on any single one:
+- **Token** — server-minted httpOnly cookie (strong; rides the page load + ws
+  upgrade, survives a localStorage clear).
+- **Device IP** — the guest's LAN address.
+- **Browser fingerprint** — a passive client-side canvas/WebGL/screen/UA hash
+  (`cyrb53`, works on a plain-HTTP LAN; page mode only).
 
-Note: a browser exposes **no hardware/advertising ID** to a web page (IDFA/GAID
-are native-app only), so the above are the available signals. None is
-bulletproof; together they make casual evasion at a party impractical. (Proxy
-mode can't run our JS on KaraFun's page, so there it's token + IP only.)
+Each identity accumulates every value it's seen with. On each visit we score
+existing identities by matching signals (token weighted strongest) and reuse the
+best match when **the token matches OR at least two signals agree**. So a guest
+can change **any one** signal — clear cookies, hop networks, or present a new
+fingerprint — and still resolve to the same person and the same play count.
+Changing *two at once* is treated as a new identity. The dashboard tags an
+identity `↻ merged` once it has absorbed a switched signal.
+
+Honest limits: a browser exposes **no hardware/advertising ID** to a web page
+(IDFA/GAID are native-app only), so these are the available signals. Proxy mode
+has only token + IP (no fingerprint — we can't run JS on KaraFun's page), so a
+cookie clear there can't be recovered from IP alone. Two strangers only
+false-merge on a double coincidence (e.g. same IP *and* same fingerprint), rare
+at party scale.
 
 ## Known honest limits
 - Reorder strategy (native move vs remove+re-add) is unknown until the probe;

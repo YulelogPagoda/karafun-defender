@@ -44,6 +44,7 @@
   .kv td:first-child { width: 1.6rem; text-align: center; }
   .kv td:last-child { text-align: right; color: #9a93b0; font-variant-numeric: tabular-nums; }
   .warnbadge { background: #5a3d12; color: #ffd9a3; font-size: .68rem; padding: .05rem .4rem; border-radius: 1rem; margin-left: .35rem; }
+  .okbadge { background: #14402a; color: #a7f3c8; font-size: .68rem; padding: .05rem .4rem; border-radius: 1rem; margin-left: .35rem; }
   tr.warnrow td { background: rgba(120, 80, 20, .16); }
 </style>
 </head>
@@ -141,8 +142,9 @@
       s.upstream ? chip(`upstream: ${s.upstream}`) : '',
       s.rewrite === true ? chip('cloud rewrite: on', 'ok') : (s.rewrite === false ? chip('rewrite: off') : ''),
       s.pendingAdds ? chip(`${s.pendingAdds} add(s) awaiting queue echo`) : '',
-      s.ipsShared ? chip(`${s.ipsShared} IP(s) with multiple IDs`, 'warn') : '',
-      s.bfpsShared ? chip(`${s.bfpsShared} browser(s) reused`, 'warn') : '',
+      s.mergedIdentities ? chip(`${s.mergedIdentities} identity(ies) kept across a switch`, 'ok') : '',
+      s.ipsShared ? chip(`${s.ipsShared} IP(s) under multiple IDs`, 'warn') : '',
+      s.bfpsShared ? chip(`${s.bfpsShared} fingerprint(s) under multiple IDs`, 'warn') : '',
       chip('live', 'ok'),
     ].join('');
 
@@ -165,11 +167,11 @@
 
     const pb = $('#people tbody');
     pb.innerHTML = s.people.map((p) => `<tr class="${(p.sharedIp || p.sharedBfp) ? 'warnrow' : ''}">
-      <td>${esc(p.name)}</td>
+      <td>${esc(p.name)}${p.merged ? `<span class="okbadge" title="kept its count across a switched cookie / IP / fingerprint">↻ merged</span>` : ''}</td>
       <td><code>${p.fp}</code></td>
       <td class="num">${p.played}</td>
-      <td class="muted">${p.lastIp || '—'}${p.sharedIp ? `<span class="warnbadge" title="multiple IDs from this IP — possible cache-clear">${p.idsAtIp} IDs</span>` : ''}</td>
-      <td class="muted">${p.bfp ? `<code>${p.bfp}</code>` : '—'}${p.sharedBfp ? `<span class="warnbadge" title="same browser fingerprint as another ID — likely the same device">${p.idsAtBfp} IDs</span>` : ''}</td>
+      <td class="muted">${p.lastIp || '—'}${p.ipCount > 1 ? `<span class="okbadge" title="${p.ipCount} IPs seen for this person">+${p.ipCount - 1}</span>` : ''}${p.sharedIp ? `<span class="warnbadge" title="this IP also appears under another identity">shared</span>` : ''}</td>
+      <td class="muted">${p.bfp ? `<code>${p.bfp}</code>` : '—'}${p.bfpCount > 1 ? `<span class="okbadge" title="${p.bfpCount} fingerprints seen">+${p.bfpCount - 1}</span>` : ''}${p.sharedBfp ? `<span class="warnbadge" title="this fingerprint also appears under another identity">shared</span>` : ''}</td>
     </tr>`).join('');
     $('#peopleEmpty').style.display = s.people.length ? 'none' : 'block';
     $('#people').style.display = s.people.length ? 'table' : 'none';
