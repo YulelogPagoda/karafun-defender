@@ -80,10 +80,47 @@ let pending = [];
 /** guest socket -> { fp }  (page mode only) */
 const guests = new Map();
 
-// ---- dual logging ---------------------------------------------------------
+// ---- dual logging (console + in-memory ring buffer for download) ----------
+const LOG_CAP = 3000;
+const logBuffer = [];
+const safeStr = (a) => { try { return JSON.stringify(a); } catch (_) { return String(a); } };
+
 function log(tag, ...args) {
-  const ts = new Date().toISOString().slice(11, 23);
-  console.log(`${ts} ${tag}`, ...args);
+  const stamp = new Date().toISOString().slice(11, 23);
+  const msg = args.map((a) => (typeof a === 'string' ? a : safeStr(a))).join(' ');
+  const line = `${stamp} ${tag} ${msg}`;
+  console.log(line);
+  logBuffer.push(line);
+  if (logBuffer.length > LOG_CAP) logBuffer.shift();
+}
+
+// ---- diagnostics: is attribution actually working? ------------------------
+// Counters + recent feeds that answer "can we identify who selected what song?"
+// Surfaced live on the dashboard and in the downloadable diagnostic bundle.
+const diag = {
+  startedAt: Date.now(),
+  proxyRequests: 0,
+  searchesSeen: 0,
+  addsSeen: 0,        // add-shaped requests observed
+  addsWithSong: 0,    // ...where we parsed a title/songId
+  queueFramesSeen: 0,
+  queueEntriesSeen: 0,        // distinct queue rows ever seen
+  queueEntriesWithSinger: 0,  // ...that carried a singerName from KaraFun
+  correlated: 0,      // add bound to a queue row (who↔what)
+  unattributed: 0,    // queue rows we couldn't tie to anyone
+  playsAttributed: 0,
+  playsUnattributed: 0,
+  recentAdds: [],     // { t, fp, song }
+  recentBinds: [],    // { t, entryId, fp, title }
+  recentPlays: [],    // { t, fp, title }
+};
+const diagSeenEntries = new Set(); // queue ids counted once
+function pushRecent(arr, item, cap = 20) { arr.push(item); if (arr.length > cap) arr.shift(); }
+
+// Verdict: do we have a working who↔what link? Either KaraFun names the singer
+// in the queue, or we've bound at least one add to its resulting row.
+function canIdentify() {
+  return diag.correlated > 0 || diag.queueEntriesWithSinger > 0;
 }
 
 // This machine's non-internal IPv4 address(es). The guest-facing URL is just
@@ -192,6 +229,12 @@ function addSong(fp, title) {
     singerName: rec ? rec.name : 'guest',
   };
   pending.push(entry);
+  // Page mode (or proxy-live): who + what are known at add time — full attribution.
+  diag.addsSeen += 1;
+  diag.addsWithSong += 1;
+  diag.correlated += 1;
+  pushRecent(diag.recentAdds, { t: Date.now(), fp: short(fp), song: entry.title });
+  pushRecent(diag.recentBinds, { t: Date.now(), entryId: entry.id, fp: short(fp), title: entry.title });
   reconcile(`add ${entry.singerName}:${entry.title}`);
   return entry;
 }
@@ -314,13 +357,21 @@ function scheduleReconnect(why) {
 // timing correlation against recent proxied adds — and mirror it into pending
 // so fairshare can order it and reconcile can reorder it.
 function handleQueueFrame(entries) {
+  diag.queueFramesSeen += 1;
+  for (const e of entries) {
+    if (!diagSeenEntries.has(e.id)) {
+      diagSeenEntries.add(e.id);
+      diag.queueEntriesSeen += 1;
+      if (e.singerName) diag.queueEntriesWithSinger += 1;
+    }
+  }
   if (MODE !== 'proxy') return; // page mode is authoritative over its own pending
   const now = Date.now();
   let changed = false;
   for (const e of entries) {
     let fp = correlator.fpForEntry(e.id);
     if (!fp) fp = correlator.attachEntry(e.id, now);
-    if (!fp) continue; // can't attribute yet — leave it for a later frame
+    if (!fp) { diag.unattributed += 1; continue; } // leave it for a later frame
     if (!pending.some((p) => p.id === e.id)) {
       const rec = store.get(fp);
       pending.push({
@@ -330,6 +381,8 @@ function handleQueueFrame(entries) {
         title: e.title || `song ${seqCounter}`,
         singerName: rec ? rec.name : 'guest',
       });
+      diag.correlated += 1;
+      pushRecent(diag.recentBinds, { t: now, entryId: e.id, fp: short(fp), title: e.title || null });
       log('correlate', `queue entry ${e.id} -> fp=${short(fp)} (${e.title || '?'})`);
       changed = true;
     }
@@ -351,12 +404,15 @@ function attributeFinish(fin) {
 
   if (fp) {
     store.recordPlay(fp);
+    diag.playsAttributed += 1;
+    pushRecent(diag.recentPlays, { t: Date.now(), fp: short(fp), title: entry ? entry.title : null });
     if (entry) pending = pending.filter((e) => e.id !== entry.id);
     if (fin.finishedId != null) correlator.forget(fin.finishedId);
     store.persist();
     log('PLAY', `recorded for ${short(fp)}${entry ? ` (${entry.title})` : ''}`);
     reconcile('song finished');
   } else {
+    diag.playsUnattributed += 1;
     log('PLAY', 'finished frame could not be attributed', JSON.stringify(fin));
   }
 }
@@ -393,6 +449,7 @@ function adminState() {
     joinPath: JOIN_PATH,
     playerConnected: !!(player && player.readyState === WebSocket.OPEN),
     pendingAdds: correlator.pendingAdds(),
+    diag: { ...diag, canIdentify: canIdentify() },
     queue: ordered.map((e) => ({
       id: e.id,
       position: e._position + 1,
@@ -422,6 +479,27 @@ function installAdmin(app) {
     reconcile('admin reset'); // reconcile() pushes the new state to dashboards
     res.json({ ok: true, reset: n });
   });
+  // Downloadable diagnostic bundle — hand this back for fixing the protocol
+  // stubs. Includes config, the live diagnostics/verdict, current state, and the
+  // captured observe log.
+  app.get('/__admin/log', (req, res) => {
+    if (!adminAuthed(req)) return res.status(403).end();
+    const bundle = {
+      generatedAt: new Date().toISOString(),
+      note: 'KaraFun fair-share observe-mode diagnostic capture. Send this back to fill in the kfadapter stubs (queue/finished/add/search shapes).',
+      config: {
+        mode: MODE, observe: OBSERVE, weight: WEIGHT, guestPort: GUEST_PORT,
+        playerUrl: PLAYER_URL, upstream: UPSTREAM || null,
+        roomUrl: KARAFUN_ROOM_URL || null, joinPath: JOIN_PATH,
+      },
+      state: adminState(), // includes diagnostics + verdict + queue + people
+      log: logBuffer.slice(),
+    };
+    const fname = `karafun-diag-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+    res.setHeader('Content-Disposition', `attachment; filename="${fname}"`);
+    res.type('application/json').send(JSON.stringify(bundle, null, 2));
+  });
+
   // QR for the guest/proxy URL, rendered as SVG (scales crisply, no binary).
   app.get('/__admin/qr', (req, res) => {
     if (!adminAuthed(req)) return res.status(403).end();
@@ -619,10 +697,12 @@ function startProxyFrontend() {
     store.ensure(fp, store.get(fp)?.name || `guest@${ip}`, ip);
 
     // GATING UNKNOWN: KaraFun web-UI request shapes. sniffWeb is best-effort.
+    diag.proxyRequests += 1;
     const sniff = kfadapter.sniffWeb(req.method, req.url);
     const who = `fp=${short(fp)}${minted ? '(new)' : ''} ip=${ip}`;
 
     if (sniff.kind !== 'add') {
+      if (sniff.kind === 'search') diag.searchesSeen += 1;
       log('proxy→', `${req.method} ${req.url}  ${sniff.kind === 'other' ? '' : `:: ${sniff.kind} `}(${who})`);
       return next();
     }
@@ -633,7 +713,10 @@ function startProxyFrontend() {
       if (body != null) req._kfBody = body; // forwarded to upstream verbatim
       const info = kfadapter.parseAddRequest(req.method, req.url, req.headers['content-type'], body);
       correlator.recordAdd(fp, Date.now(), info.title);
+      diag.addsSeen += 1;
+      if (info.title || info.songId) diag.addsWithSong += 1;
       const song = info.title || (info.songId ? `#${info.songId}` : '?');
+      pushRecent(diag.recentAdds, { t: Date.now(), fp: short(fp), song });
       log(OBSERVE ? 'WOULD' : 'add',
         `add by ${short(fp)} :: "${song}" — binds to its next queue entry  (${who})`);
       next();

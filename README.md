@@ -171,7 +171,15 @@ than one, pick which), the fair-share order with score breakdown, the people
 table (play counts + last IP), and a **Reset stats** button. Just open the
 dashboard and let guests scan the QR — no typing IPs. It updates **live over
 WebSocket** — the server pushes fresh state on every change (add, finish, reset,
-player connect/disconnect), no polling. Reset zeros everyone's play count —
+player connect/disconnect), no polling.
+
+It also shows an **Attribution health** panel that answers *"can we tell who
+selected what song?"* live — whether add requests are being seen, songs parsed
+from them, queue frames + `singerName` arriving from the player, and adds bound
+to their queue rows (the who↔what verdict). Next to it, **Download diagnostics
+log** exports a JSON bundle — config + the live counters/verdict + current state
++ the captured observe log — at `/__admin/log`. That's the file to hand back for
+filling in the `kfadapter` protocol stubs. Reset zeros everyone's play count —
 early in the night, before there are enough people to need fairness, reset so
 order falls back to first-come and early arrivers keep singing. Set `ADMIN_TOKEN`
 to require `?t=<token>` on the dashboard.

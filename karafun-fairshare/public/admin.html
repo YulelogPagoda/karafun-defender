@@ -38,6 +38,11 @@
   .qrwrap img { width: 100%; height: 100%; display: block; }
   .qrurl { font-size: 1.05rem; font-weight: 700; word-break: break-all; }
   select { font: inherit; padding: .4rem .5rem; border-radius: .5rem; background: #1f1b2b; color: inherit; border: 1px solid #3a3550; margin-top: .5rem; }
+  .hhead { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+  .kv { width: 100%; border-collapse: collapse; margin-top: .5rem; }
+  .kv td { padding: .3rem .5rem; border-bottom: 1px solid #2c2740; font-size: .88rem; }
+  .kv td:first-child { width: 1.6rem; text-align: center; }
+  .kv td:last-child { text-align: right; color: #9a93b0; font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
@@ -51,6 +56,19 @@
       <div id="qrurl" class="qrurl"></div>
       <div id="qrroom" class="muted" style="margin-top:.3rem;font-size:.8rem"></div>
       <select id="qrpick" style="display:none"></select>
+    </div>
+  </div>
+
+  <div class="card" id="health" style="display:none">
+    <div class="hhead">
+      <h2 style="margin:0">Attribution health</h2>
+      <span id="verdict"></span>
+    </div>
+    <table class="kv"><tbody id="healthrows"></tbody></table>
+    <div id="recent" class="muted" style="margin-top:.5rem"></div>
+    <div class="bar" style="margin-top:.7rem">
+      <button id="dlBtn">⬇ Download diagnostics log</button>
+      <span class="muted">hand this back to fix the protocol stubs</span>
     </div>
   </div>
 
@@ -125,6 +143,7 @@
 
     updateQR(s.guestUrls, s.qr);
     $('#qrroom').textContent = s.roomUrl ? `→ proxied to KaraFun room: ${s.roomUrl}` : '';
+    renderHealth(s.diag);
 
     const qb = $('#queue tbody');
     qb.innerHTML = s.queue.map((e) => `<tr>
@@ -173,6 +192,28 @@
       ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
   }
 
+  // Attribution health panel: shows whether the who↔what link is actually working.
+  function renderHealth(d) {
+    if (!d) { $('#health').style.display = 'none'; return; }
+    $('#health').style.display = 'block';
+    $('#verdict').innerHTML = d.canIdentify
+      ? chip('✓ identifying who selected what song', 'ok')
+      : chip('⚠ not confirmed yet', 'warn');
+    const row = (ok, label, detail) =>
+      `<tr><td>${ok ? '✅' : '⬜'}</td><td>${label}</td><td>${detail}</td></tr>`;
+    $('#healthrows').innerHTML = [
+      row(d.addsSeen > 0, 'Add requests seen', d.addsSeen),
+      row(d.addsWithSong > 0, 'Song parsed from request', d.addsWithSong),
+      row(d.queueFramesSeen > 0, 'Queue frames from player', `${d.queueFramesSeen}f / ${d.queueEntriesSeen} rows`),
+      row(d.queueEntriesWithSinger > 0, 'singerName in queue (best case)', `${d.queueEntriesWithSinger}/${d.queueEntriesSeen}`),
+      row(d.correlated > 0, 'Add bound to a queue row (who↔what)', d.correlated),
+      row(d.playsAttributed > 0, 'Plays attributed', `${d.playsAttributed} ok / ${d.playsUnattributed} miss`),
+    ].join('');
+    const adds = (d.recentAdds || []).slice(-5).reverse()
+      .map((a) => `${esc(a.fp)} → ${esc(a.song)}`).join('  ·  ');
+    $('#recent').innerHTML = adds ? `recent adds: ${adds}` : 'no adds observed yet';
+  }
+
   $('#resetBtn').onclick = async () => {
     if (!confirm('Reset everyone\'s play count to zero?')) return;
     $('#resetBtn').disabled = true;
@@ -189,6 +230,7 @@
   };
 
   $('#qrpick').onchange = () => updateQR(lastUrls, true);
+  $('#dlBtn').onclick = () => { window.location = `/__admin/log${q}`; };
 
   $('#status').innerHTML = chip('connecting…');
   connect();
