@@ -88,7 +88,7 @@
 
   <h2>People (by play count)</h2>
   <table id="people"><thead><tr>
-    <th>Name</th><th>fp</th><th class="num">played</th><th>device IP</th>
+    <th>Name</th><th>fp</th><th class="num">played</th><th>device IP</th><th>browser</th>
   </tr></thead><tbody></tbody></table>
   <p class="muted" id="peopleEmpty" style="display:none">Nobody yet.</p>
 
@@ -142,6 +142,7 @@
       s.rewrite === true ? chip('cloud rewrite: on', 'ok') : (s.rewrite === false ? chip('rewrite: off') : ''),
       s.pendingAdds ? chip(`${s.pendingAdds} add(s) awaiting queue echo`) : '',
       s.ipsShared ? chip(`${s.ipsShared} IP(s) with multiple IDs`, 'warn') : '',
+      s.bfpsShared ? chip(`${s.bfpsShared} browser(s) reused`, 'warn') : '',
       chip('live', 'ok'),
     ].join('');
 
@@ -163,11 +164,12 @@
     $('#queue').style.display = s.queue.length ? 'table' : 'none';
 
     const pb = $('#people tbody');
-    pb.innerHTML = s.people.map((p) => `<tr class="${p.sharedIp ? 'warnrow' : ''}">
+    pb.innerHTML = s.people.map((p) => `<tr class="${(p.sharedIp || p.sharedBfp) ? 'warnrow' : ''}">
       <td>${esc(p.name)}</td>
       <td><code>${p.fp}</code></td>
       <td class="num">${p.played}</td>
       <td class="muted">${p.lastIp || '—'}${p.sharedIp ? `<span class="warnbadge" title="multiple IDs from this IP — possible cache-clear">${p.idsAtIp} IDs</span>` : ''}</td>
+      <td class="muted">${p.bfp ? `<code>${p.bfp}</code>` : '—'}${p.sharedBfp ? `<span class="warnbadge" title="same browser fingerprint as another ID — likely the same device">${p.idsAtBfp} IDs</span>` : ''}</td>
     </tr>`).join('');
     $('#peopleEmpty').style.display = s.people.length ? 'none' : 'block';
     $('#people').style.display = s.people.length ? 'table' : 'none';

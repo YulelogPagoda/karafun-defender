@@ -233,15 +233,26 @@ cd karafun-fairshare
 npm test                 # node:test unit tests for the pure ordering engine
 ```
 
+## Identity & evasion resistance
+Layered signals so a guest can't trivially reset their play count by clearing
+state — the dashboard cross-references all three and flags reuse:
+- **Server-pinned httpOnly token (primary, both modes)** — minted on first visit,
+  keyed server-side. Survives a localStorage clear (it's a cookie, sent on the
+  page load and the ws upgrade); the guest would have to clear cookies too.
+- **Device IP (both modes)** — recorded per identity; the dashboard flags an IP
+  with several identities (the clear-and-rejoin tell).
+- **Passive browser fingerprint (page mode)** — a client-side canvas/WebGL/
+  screen/UA hash (`cyrb53`, works on a plain-HTTP LAN). If someone clears cookies
+  *and* localStorage they get a new token, but the same fingerprint flags them as
+  the same device. Imperfect — privacy browsers randomize it and similar devices
+  can collide.
+
+Note: a browser exposes **no hardware/advertising ID** to a web page (IDFA/GAID
+are native-app only), so the above are the available signals. None is
+bulletproof; together they make casual evasion at a party impractical. (Proxy
+mode can't run our JS on KaraFun's page, so there it's token + IP only.)
+
 ## Known honest limits
-- Fingerprint is forgeable by clearing browser storage. Fine for a party. For
-  evasion-resistance, bind it server-side to a first-visit httpOnly token — see
-  notes in `store.js` (built in proxy mode). The dashboard also records each
-  identity's **device IP** (both modes) and flags when several fingerprints share
-  one IP — the tell-tale of someone clearing storage to mint a fresh identity.
-  Note: a browser exposes no hardware/advertising ID to a web page (that's a
-  native-app concept), so IP + a passive browser fingerprint are the available
-  signals.
 - Reorder strategy (native move vs remove+re-add) is unknown until the probe;
   `kfadapter.moveTo` has both paths sketched.
 - Song-completion attribution depends on the finished-frame naming who sang.

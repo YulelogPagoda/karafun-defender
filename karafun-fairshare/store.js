@@ -32,20 +32,27 @@ class Store {
   }
 
   /**
-   * Ensure a fingerprint exists; update its display name and (optionally) the
-   * last-seen IP. `ip` is used by proxy mode's server-side identity. Returns the
-   * record.
+   * Ensure a fingerprint exists; update its display name, last-seen IP, and
+   * optional correlation signals. `fp` is the primary identity key (the
+   * server-minted httpOnly token where available). `extra` may carry
+   * `clientFp` (the guest's localStorage id) and `bfp` (a passive browser
+   * fingerprint) — kept so the dashboard can spot one device behind several
+   * identities. Returns the record.
    */
-  ensure(fp, name, ip) {
+  ensure(fp, name, ip, extra) {
     let rec = this.people.get(fp);
     if (!rec) {
       rec = { name: name || 'guest', played: 0, firstSeen: Date.now() };
       if (ip) rec.lastIp = ip;
+      if (extra && extra.clientFp) rec.clientFp = extra.clientFp;
+      if (extra && extra.bfp) rec.bfp = extra.bfp;
       this.people.set(fp, rec);
       this._dirty = true;
     } else {
       if (name && name !== rec.name) { rec.name = name; this._dirty = true; }
       if (ip && ip !== rec.lastIp) { rec.lastIp = ip; this._dirty = true; }
+      if (extra && extra.clientFp && extra.clientFp !== rec.clientFp) { rec.clientFp = extra.clientFp; this._dirty = true; }
+      if (extra && extra.bfp && extra.bfp !== rec.bfp) { rec.bfp = extra.bfp; this._dirty = true; }
     }
     return rec;
   }

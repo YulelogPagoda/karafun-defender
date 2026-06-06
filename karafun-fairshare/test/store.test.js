@@ -31,6 +31,18 @@ test('ensure updates name and lastIp without touching play count', () => {
   assert.equal(s.played('fp1'), 1); // unchanged
 });
 
+test('ensure records correlation signals (clientFp, bfp)', () => {
+  const s = new Store(tmpFile());
+  s.ensure('tok1', 'Alice', '10.0.0.1', { clientFp: 'ls-aaa', bfp: 'bf-123' });
+  assert.equal(s.get('tok1').clientFp, 'ls-aaa');
+  assert.equal(s.get('tok1').bfp, 'bf-123');
+  // updates when changed, keeps play count
+  s.recordPlay('tok1');
+  s.ensure('tok1', 'Alice', '10.0.0.1', { bfp: 'bf-456' });
+  assert.equal(s.get('tok1').bfp, 'bf-456');
+  assert.equal(s.played('tok1'), 1);
+});
+
 test('resetStats zeros all play counts but keeps identities', () => {
   const s = new Store(tmpFile());
   s.ensure('a', 'A'); s.ensure('b', 'B');

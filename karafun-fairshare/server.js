@@ -445,11 +445,13 @@ function adminAuthed(req) {
 function adminState() {
   const ordered = fairshare.annotate(pending, playedOf, WEIGHT);
   const all = store.all();
-  // Count distinct fingerprints per IP — >1 suggests a device that cleared
-  // storage to mint a fresh identity (same IP, new fingerprint).
+  // Count distinct identities per IP and per browser fingerprint — >1 on either
+  // axis suggests one device behind several identities (storage/cookie cleared).
   const idsPerIp = {};
+  const idsPerBfp = {};
   for (const r of Object.values(all)) {
     if (r.lastIp) idsPerIp[r.lastIp] = (idsPerIp[r.lastIp] || 0) + 1;
+    if (r.bfp) idsPerBfp[r.bfp] = (idsPerBfp[r.bfp] || 0) + 1;
   }
   const people = Object.entries(all)
     .map(([fp, r]) => ({
@@ -459,10 +461,14 @@ function adminState() {
       lastIp: r.lastIp || null,
       idsAtIp: r.lastIp ? idsPerIp[r.lastIp] : 1,
       sharedIp: !!(r.lastIp && idsPerIp[r.lastIp] > 1),
+      bfp: r.bfp ? String(r.bfp).slice(0, 8) : null,
+      idsAtBfp: r.bfp ? idsPerBfp[r.bfp] : 1,
+      sharedBfp: !!(r.bfp && idsPerBfp[r.bfp] > 1),
       firstSeen: r.firstSeen,
     }))
     .sort((a, b) => b.played - a.played || a.firstSeen - b.firstSeen);
   const ipsShared = Object.values(idsPerIp).filter((c) => c > 1).length;
+  const bfpsShared = Object.values(idsPerBfp).filter((c) => c > 1).length;
 
   return {
     mode: MODE,
@@ -479,6 +485,7 @@ function adminState() {
     pendingAdds: correlator.pendingAdds(),
     diag: { ...diag, canIdentify: canIdentify() },
     ipsShared,
+    bfpsShared,
     queue: ordered.map((e) => ({
       id: e.id,
       position: e._position + 1,
@@ -600,13 +607,18 @@ function handleGuestMessage(ws, raw) {
 
   switch (msg.type) {
     case 'join': {
-      const fp = String(msg.fp || '').trim();
       const name = String(msg.name || 'guest').trim().slice(0, 40);
+      const clientFp = String(msg.fp || '').trim().slice(0, 64);   // localStorage id
+      const bfp = String(msg.bfp || '').trim().slice(0, 32);       // browser fingerprint
+      // Primary key: the server-pinned httpOnly token; fall back to the client
+      // id if no cookie arrived. localStorage clears don't change the token.
+      const fp = ws._token || clientFp;
       if (!fp) return send(ws, { type: 'error', error: 'missing fingerprint' });
-      store.ensure(fp, name, ws._ip);
+      store.ensure(fp, name, ws._ip, { clientFp: clientFp || null, bfp: bfp || null });
       guests.set(ws, { fp, ip: ws._ip });
       store.persist();
-      send(ws, { type: 'joined', fp, name, observe: OBSERVE });
+      // Don't leak the httpOnly token back to client JS — send a masked id.
+      send(ws, { type: 'joined', fp: short(fp), name, observe: OBSERVE });
       broadcastStandings();
       break;
     }
@@ -647,6 +659,14 @@ function handleGuestMessage(ws, raw) {
 
 function startPageFrontend() {
   const app = express();
+  // Mint the httpOnly identity token on the page load, so it rides the ws
+  // upgrade. It survives a localStorage clear (cookie, not localStorage) — the
+  // guest would have to clear cookies too.
+  app.use((req, res, next) => {
+    const { minted } = identify(req);
+    if (minted) res.setHeader('Set-Cookie', minted);
+    next();
+  });
   installAdmin(app);
   app.use(express.static(PUBLIC_DIR));
   const httpServer = http.createServer(app);
@@ -654,6 +674,7 @@ function startPageFrontend() {
   const guestWss = new WebSocketServer({ noServer: true });
   guestWss.on('connection', (ws, req) => {
     ws._ip = clientIp(req);
+    ws._token = parseCookies(req.headers.cookie)[COOKIE_NAME] || null;
     log('guest', `connected from ${ws._ip}`);
     ws.on('message', (raw) => handleGuestMessage(ws, raw.toString()));
     ws.on('close', () => {
