@@ -18,8 +18,14 @@ npm start        # safe OBSERVE mode: logs only, never touches the player
 
 That's the whole install. Now:
 
-- **Operator dashboard:** open **http://localhost:8080/__admin**
-- **Guests:** point a phone on the same Wi-Fi at **http://&lt;this-machine-ip&gt;:8080**
+- **Operator dashboard:** open **http://localhost:8080/__admin** (on this machine)
+- **Guests:** point a phone on the same Wi-Fi at the `guests:` URL the server
+  prints at startup — that's this machine's own LAN IP on port 8080.
+
+> **No IP is hardcoded.** The server binds to all interfaces and detects its own
+> LAN address(es) at boot, printing the exact `guests:` URL to use. Every IP
+> shown anywhere in this README (e.g. `192.168.1.x`) is just a placeholder for
+> *your* machine's address.
 
 Add a few songs and watch the order rebalance in the dashboard. Nothing is sent
 to the player in this mode — it only logs the order it *would* apply.
@@ -151,15 +157,18 @@ the play-count attribution when the song finishes.
 
 ### Operator dashboard
 Both modes serve a monitor at **`/__admin`** (e.g. `http://localhost:8080/__admin`):
-the fair-share order with score breakdown, the people table (play counts + last
-IP), and a **Reset stats** button. It updates **live over WebSocket** — the
-server pushes fresh state on every change (add, finish, reset, player
-connect/disconnect), no polling. Reset zeros everyone's play count —
+a **scannable QR** of the guest URL (this machine's detected LAN IP — if more
+than one, pick which), the fair-share order with score breakdown, the people
+table (play counts + last IP), and a **Reset stats** button. Just open the
+dashboard and let guests scan the QR — no typing IPs. It updates **live over
+WebSocket** — the server pushes fresh state on every change (add, finish, reset,
+player connect/disconnect), no polling. Reset zeros everyone's play count —
 early in the night, before there are enough people to need fairness, reset so
 order falls back to first-come and early arrivers keep singing. Set `ADMIN_TOKEN`
 to require `?t=<token>` on the dashboard.
 
-Dependencies: `express` (guest page) + `ws` (both WebSocket directions).
+Dependencies: `express` (HTTP), `ws` (WebSockets), `http-proxy` (proxy mode),
+`qrcode` (dashboard QR).
 
 ## Probe
 ```

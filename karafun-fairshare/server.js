@@ -11,14 +11,18 @@
 //   MODE=proxy            reverse-proxy KaraFun's own web UI through us, so the
 //       QR points at THIS box and guests get KaraFun's UI while we fingerprint
 //       each session server-side (httpOnly token + IP) and observe/reorder:
-//       [guest phones] --http--> [server.js @ .42] --http--> [KARAFUN_UI_URL]
+//       [guest phones] --http--> [server.js @ this box] --http--> [KARAFUN_UI_URL]
 //                                      `--ws--> [KaraFun player]  (reordering)
+//
+// We bind on all interfaces (0.0.0.0), so the guest-facing URL is just this
+// machine's own LAN IP on GUEST_PORT — printed at boot, nothing hardcoded.
 //
 // OBSERVE MODE (default): compute the order we *would* apply and LOG it; never
 // mutate the player's queue and never alter proxied bodies. Flip OBSERVE=0 only
 // after the probe confirms the real frame/request shapes.
 
 const http = require('http');
+const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const express = require('express');
@@ -28,6 +32,11 @@ const fairshare = require('./fairshare');
 const kfadapter = require('./kfadapter');
 const { Store } = require('./store');
 const { Correlator } = require('./correlate');
+
+// QR rendering for the dashboard — optional: if the dep is missing the
+// dashboard simply shows the URL as text instead of a code.
+let QRCode = null;
+try { QRCode = require('qrcode'); } catch (_) { /* optional */ }
 
 // ---- config ---------------------------------------------------------------
 const MODE = (process.env.MODE || 'page').toLowerCase(); // 'page' | 'proxy'
@@ -53,6 +62,40 @@ const guests = new Map();
 function log(tag, ...args) {
   const ts = new Date().toISOString().slice(11, 23);
   console.log(`${ts} ${tag}`, ...args);
+}
+
+// This machine's non-internal IPv4 address(es). The guest-facing URL is just
+// one of these on GUEST_PORT — no IP is ever hardcoded; we detect it at boot.
+function lanIPs() {
+  const out = [];
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const ni of list || []) {
+      if (ni.family === 'IPv4' && !ni.internal) out.push(ni.address);
+    }
+  }
+  return out;
+}
+
+// The guest-facing URL for an IP. Port 80 is dropped so it reads as a bare
+// http://<ip> (the clean QR target), matching how a browser normalizes it.
+function guestUrl(ip) {
+  return GUEST_PORT === 80 ? `http://${ip}` : `http://${ip}:${GUEST_PORT}`;
+}
+
+// All guest entry-point URLs (this machine's LAN IP(s) on GUEST_PORT).
+function guestUrls() {
+  return lanIPs().map(guestUrl);
+}
+
+// Print the URL(s) guests/QR should hit — this machine's actual LAN IP(s).
+function logGuestUrls() {
+  const urls = guestUrls();
+  if (urls.length === 0) {
+    log('boot', `guests:      ${guestUrl('<this-machine-ip>')}   <-- the QR encodes this`);
+    return;
+  }
+  urls.forEach((u, i) =>
+    log('boot', `guests:      ${u}${i === 0 ? '   <-- the dashboard QR encodes this' : ''}`));
 }
 
 // ---- ordering + standings -------------------------------------------------
@@ -300,6 +343,8 @@ function adminState() {
     observe: OBSERVE,
     weight: WEIGHT,
     port: GUEST_PORT,
+    guestUrls: guestUrls(), // this machine's LAN IP(s) — what the QR encodes
+    qr: !!QRCode,
     upstream: MODE === 'proxy' ? (KARAFUN_UI_URL || null) : null,
     playerConnected: !!(player && player.readyState === WebSocket.OPEN),
     pendingAdds: correlator.pendingAdds(),
@@ -331,6 +376,16 @@ function installAdmin(app) {
     log('admin', `stats reset — ${n} people zeroed`);
     reconcile('admin reset'); // reconcile() pushes the new state to dashboards
     res.json({ ok: true, reset: n });
+  });
+  // QR for the guest/proxy URL, rendered as SVG (scales crisply, no binary).
+  app.get('/__admin/qr', (req, res) => {
+    if (!adminAuthed(req)) return res.status(403).end();
+    if (!QRCode) return res.status(501).type('text/plain').send('qrcode not installed');
+    const url = String(req.query.url || guestUrls()[0] || guestUrl('localhost'));
+    QRCode.toString(url, { type: 'svg', margin: 1 }, (err, svg) => {
+      if (err) return res.status(500).end();
+      res.type('image/svg+xml').set('Cache-Control', 'no-store').send(svg);
+    });
   });
 }
 
@@ -463,8 +518,8 @@ function startPageFrontend() {
 
   httpServer.listen(GUEST_PORT, () => {
     log('boot', `MODE=page  OBSERVE=${OBSERVE ? 1 : 0}  weight=${WEIGHT}`);
-    log('boot', `guest page:  http://localhost:${GUEST_PORT}`);
-    log('boot', `dashboard:   http://localhost:${GUEST_PORT}/__admin`);
+    logGuestUrls();
+    log('boot', `dashboard:   http://localhost:${GUEST_PORT}/__admin   (on this machine)`);
     log('boot', `player url:  ${PLAYER_URL}`);
     if (OBSERVE) log('boot', 'observe mode — nothing will be sent to the player');
     connectPlayer();
@@ -550,8 +605,8 @@ function startProxyFrontend() {
 
   httpServer.listen(GUEST_PORT, () => {
     log('boot', `MODE=proxy  OBSERVE=${OBSERVE ? 1 : 0}  weight=${WEIGHT}`);
-    log('boot', `proxy in:    http://0.0.0.0:${GUEST_PORT}   <-- point your QR here`);
-    log('boot', `dashboard:   http://localhost:${GUEST_PORT}/__admin`);
+    logGuestUrls();
+    log('boot', `dashboard:   http://localhost:${GUEST_PORT}/__admin   (on this machine)`);
     log('boot', `upstream:    ${KARAFUN_UI_URL || '(UNSET — set KARAFUN_UI_URL)'}`);
     log('boot', `player ctrl: ${PLAYER_URL}`);
     log('boot', `identity:    httpOnly '${COOKIE_NAME}' token (server-pinned) + source IP`);

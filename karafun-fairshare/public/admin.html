@@ -33,11 +33,26 @@
   .pos { color: #cfc8e6; font-weight: 700; }
   code { background: #211c30; padding: .05rem .35rem; border-radius: .3rem; }
   #updated { font-size: .72rem; color: #6f6892; }
+  .qr { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
+  .qrwrap { background: #fff; padding: .5rem; border-radius: .6rem; width: 184px; height: 184px; flex: 0 0 auto; }
+  .qrwrap img { width: 100%; height: 100%; display: block; }
+  .qrurl { font-size: 1.05rem; font-weight: 700; word-break: break-all; }
+  select { font: inherit; padding: .4rem .5rem; border-radius: .5rem; background: #1f1b2b; color: inherit; border: 1px solid #3a3550; margin-top: .5rem; }
 </style>
 </head>
 <body>
   <h1>🎛️ Fair-share operator</h1>
   <div class="bar" id="status"></div>
+
+  <div class="card qr" id="qrcard" style="display:none">
+    <div class="qrwrap"><img id="qrimg" alt="QR code to the guest URL" /></div>
+    <div>
+      <div class="muted" style="margin-bottom:.3rem">Guests scan this to join:</div>
+      <div id="qrurl" class="qrurl"></div>
+      <select id="qrpick" style="display:none"></select>
+    </div>
+  </div>
+
   <div class="bar">
     <button id="resetBtn" class="danger">Reset stats</button>
     <span class="muted" id="resetHint">zeros everyone's play count — early arrivers sing more until the room fills up</span>
@@ -67,6 +82,35 @@
 
   function chip(text, cls) { return `<span class="chip ${cls || ''}">${text}</span>`; }
 
+  // QR of the guest URL. Only re-points the <img> when the chosen URL changes,
+  // so it doesn't flicker on every state push.
+  let currentQrUrl = null;
+  let lastUrls = [];
+  function updateQR(urls, hasQr) {
+    urls = urls || [];
+    const card = $('#qrcard');
+    if (!urls.length || !hasQr) { card.style.display = 'none'; return; }
+    card.style.display = 'flex';
+    lastUrls = urls;
+    const pick = $('#qrpick');
+    if (urls.length > 1) {
+      const sig = urls.join('|');
+      if (pick.dataset.sig !== sig) {
+        pick.innerHTML = urls.map((u) => `<option>${esc(u)}</option>`).join('');
+        pick.dataset.sig = sig;
+      }
+      pick.style.display = '';
+    } else {
+      pick.style.display = 'none';
+    }
+    const chosen = (urls.length > 1 && pick.value) ? pick.value : urls[0];
+    if (chosen !== currentQrUrl) {
+      currentQrUrl = chosen;
+      $('#qrimg').src = `/__admin/qr?url=${encodeURIComponent(chosen)}${token ? `&t=${encodeURIComponent(token)}` : ''}`;
+      $('#qrurl').textContent = chosen;
+    }
+  }
+
   function render(s) {
     $('#status').innerHTML = [
       chip(`mode: ${s.mode}`),
@@ -77,6 +121,8 @@
       s.pendingAdds ? chip(`${s.pendingAdds} add(s) awaiting queue echo`) : '',
       chip('live', 'ok'),
     ].join('');
+
+    updateQR(s.guestUrls, s.qr);
 
     const qb = $('#queue tbody');
     qb.innerHTML = s.queue.map((e) => `<tr>
@@ -139,6 +185,8 @@
       $('#resetBtn').disabled = false;
     }
   };
+
+  $('#qrpick').onchange = () => updateQR(lastUrls, true);
 
   $('#status').innerHTML = chip('connecting…');
   connect();
