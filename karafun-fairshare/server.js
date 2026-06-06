@@ -274,6 +274,14 @@ function identify(req) {
 
 const short = (fp) => (fp ? String(fp).slice(0, 8) : '?');
 
+// Normalized client IP (strip the IPv4-mapped-IPv6 prefix). Used to spot when
+// several fingerprints share one device IP — the signature of a guest clearing
+// browser storage to mint a fresh identity.
+function clientIp(req) {
+  const ra = (req.socket && req.socket.remoteAddress) || '';
+  return ra.replace(/^::ffff:/, '');
+}
+
 // Buffer a request body so we can inspect it (an add's song) AND still forward
 // it to upstream — http-proxy re-streams from the buffer we hand it, so the
 // proxy stays byte-for-byte transparent.
@@ -436,15 +444,25 @@ function adminAuthed(req) {
 
 function adminState() {
   const ordered = fairshare.annotate(pending, playedOf, WEIGHT);
-  const people = Object.entries(store.all())
+  const all = store.all();
+  // Count distinct fingerprints per IP — >1 suggests a device that cleared
+  // storage to mint a fresh identity (same IP, new fingerprint).
+  const idsPerIp = {};
+  for (const r of Object.values(all)) {
+    if (r.lastIp) idsPerIp[r.lastIp] = (idsPerIp[r.lastIp] || 0) + 1;
+  }
+  const people = Object.entries(all)
     .map(([fp, r]) => ({
       fp: String(fp).slice(0, 8),
       name: r.name,
       played: r.played,
       lastIp: r.lastIp || null,
+      idsAtIp: r.lastIp ? idsPerIp[r.lastIp] : 1,
+      sharedIp: !!(r.lastIp && idsPerIp[r.lastIp] > 1),
       firstSeen: r.firstSeen,
     }))
     .sort((a, b) => b.played - a.played || a.firstSeen - b.firstSeen);
+  const ipsShared = Object.values(idsPerIp).filter((c) => c > 1).length;
 
   return {
     mode: MODE,
@@ -460,6 +478,7 @@ function adminState() {
     playerConnected: !!(player && player.readyState === WebSocket.OPEN),
     pendingAdds: correlator.pendingAdds(),
     diag: { ...diag, canIdentify: canIdentify() },
+    ipsShared,
     queue: ordered.map((e) => ({
       id: e.id,
       position: e._position + 1,
@@ -584,8 +603,8 @@ function handleGuestMessage(ws, raw) {
       const fp = String(msg.fp || '').trim();
       const name = String(msg.name || 'guest').trim().slice(0, 40);
       if (!fp) return send(ws, { type: 'error', error: 'missing fingerprint' });
-      store.ensure(fp, name);
-      guests.set(ws, { fp });
+      store.ensure(fp, name, ws._ip);
+      guests.set(ws, { fp, ip: ws._ip });
       store.persist();
       send(ws, { type: 'joined', fp, name, observe: OBSERVE });
       broadcastStandings();
@@ -633,8 +652,9 @@ function startPageFrontend() {
   const httpServer = http.createServer(app);
 
   const guestWss = new WebSocketServer({ noServer: true });
-  guestWss.on('connection', (ws) => {
-    log('guest', 'connected');
+  guestWss.on('connection', (ws, req) => {
+    ws._ip = clientIp(req);
+    log('guest', `connected from ${ws._ip}`);
     ws.on('message', (raw) => handleGuestMessage(ws, raw.toString()));
     ws.on('close', () => {
       guests.delete(ws);
@@ -751,7 +771,7 @@ function startProxyFrontend() {
   app.use((req, res, next) => {
     const { fp, minted } = identify(req);
     if (minted) req._kfMinted = minted;
-    const ip = req.socket.remoteAddress;
+    const ip = clientIp(req);
     store.ensure(fp, store.get(fp)?.name || `guest@${ip}`, ip);
 
     // GATING UNKNOWN: KaraFun web-UI request shapes. sniffWeb is best-effort.

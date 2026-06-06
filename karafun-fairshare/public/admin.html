@@ -43,6 +43,8 @@
   .kv td { padding: .3rem .5rem; border-bottom: 1px solid #2c2740; font-size: .88rem; }
   .kv td:first-child { width: 1.6rem; text-align: center; }
   .kv td:last-child { text-align: right; color: #9a93b0; font-variant-numeric: tabular-nums; }
+  .warnbadge { background: #5a3d12; color: #ffd9a3; font-size: .68rem; padding: .05rem .4rem; border-radius: 1rem; margin-left: .35rem; }
+  tr.warnrow td { background: rgba(120, 80, 20, .16); }
 </style>
 </head>
 <body>
@@ -86,7 +88,7 @@
 
   <h2>People (by play count)</h2>
   <table id="people"><thead><tr>
-    <th>Name</th><th>fp</th><th class="num">played</th><th>last IP</th>
+    <th>Name</th><th>fp</th><th class="num">played</th><th>device IP</th>
   </tr></thead><tbody></tbody></table>
   <p class="muted" id="peopleEmpty" style="display:none">Nobody yet.</p>
 
@@ -139,6 +141,7 @@
       s.upstream ? chip(`upstream: ${s.upstream}`) : '',
       s.rewrite === true ? chip('cloud rewrite: on', 'ok') : (s.rewrite === false ? chip('rewrite: off') : ''),
       s.pendingAdds ? chip(`${s.pendingAdds} add(s) awaiting queue echo`) : '',
+      s.ipsShared ? chip(`${s.ipsShared} IP(s) with multiple IDs`, 'warn') : '',
       chip('live', 'ok'),
     ].join('');
 
@@ -160,11 +163,11 @@
     $('#queue').style.display = s.queue.length ? 'table' : 'none';
 
     const pb = $('#people tbody');
-    pb.innerHTML = s.people.map((p) => `<tr>
+    pb.innerHTML = s.people.map((p) => `<tr class="${p.sharedIp ? 'warnrow' : ''}">
       <td>${esc(p.name)}</td>
       <td><code>${p.fp}</code></td>
       <td class="num">${p.played}</td>
-      <td class="muted">${p.lastIp || '—'}</td>
+      <td class="muted">${p.lastIp || '—'}${p.sharedIp ? `<span class="warnbadge" title="multiple IDs from this IP — possible cache-clear">${p.idsAtIp} IDs</span>` : ''}</td>
     </tr>`).join('');
     $('#peopleEmpty').style.display = s.people.length ? 'none' : 'block';
     $('#people').style.display = s.people.length ? 'table' : 'none';

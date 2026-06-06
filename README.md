@@ -236,7 +236,12 @@ npm test                 # node:test unit tests for the pure ordering engine
 ## Known honest limits
 - Fingerprint is forgeable by clearing browser storage. Fine for a party. For
   evasion-resistance, bind it server-side to a first-visit httpOnly token — see
-  notes in `store.js`. Not built.
+  notes in `store.js` (built in proxy mode). The dashboard also records each
+  identity's **device IP** (both modes) and flags when several fingerprints share
+  one IP — the tell-tale of someone clearing storage to mint a fresh identity.
+  Note: a browser exposes no hardware/advertising ID to a web page (that's a
+  native-app concept), so IP + a passive browser fingerprint are the available
+  signals.
 - Reorder strategy (native move vs remove+re-add) is unknown until the probe;
   `kfadapter.moveTo` has both paths sketched.
 - Song-completion attribution depends on the finished-frame naming who sang.
