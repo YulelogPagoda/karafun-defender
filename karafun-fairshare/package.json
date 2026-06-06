@@ -1,0 +1,19 @@
+{
+  "name": "karafun-fairshare",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Fair-share queue scheduler that sits in front of a KaraFun player (observe-mode scaffold).",
+  "main": "server.js",
+  "scripts": {
+    "observe": "OBSERVE=1 node server.js",
+    "live": "OBSERVE=0 node server.js",
+    "test": "node --test",
+    "probe": "node ../karafun-probe.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

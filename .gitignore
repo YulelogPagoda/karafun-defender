@@ -1,0 +1,6 @@
+node_modules/
+*.snapshot.json
+*.snapshot.json.tmp
+*.log
+npm-debug.log*
+.DS_Store
